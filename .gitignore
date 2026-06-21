@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Logs
+*.log
+annotator.log
+
+# Annotations (user data — exclude from repo)
+annotations/*/audio/
+annotations/*/video/
+
+# Keep the CSV log but not the actual media files
+!annotations/annotations.csv
+
+# Temp files
+*.tmp
+*.bak
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Videos (too large for git)
+videos/
+*.mp4
+*.avi
+*.mov
+*.mkv
