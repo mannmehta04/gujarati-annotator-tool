@@ -13,6 +13,7 @@ from controllers.extractor import (
     get_preview_copy,
     format_time,
 )
+from controllers.downloader import download_video
 from models.annotation import (
     build_segment_choices,
     get_segment_row,
@@ -156,3 +157,36 @@ def on_confirm_delete(target_id: str):
 # Legacy alias
 def on_delete_segment(display_str: str, seg_map: dict):
     return on_delete_request(display_str, seg_map)
+
+
+def on_download_video(url: str):
+    """
+    Streaming handler for the Download tab.
+
+    Yields (log_text, path_or_empty, gr.update) tuples as yt-dlp runs.
+    The log_text accumulates all output lines.
+    On completion yields the saved path (or "") for auto-population.
+
+    Outputs (in order):
+        download_log    — scrolling text log
+        download_path   — final saved path (empty until done)
+        download_status — status markdown (empty until done)
+    """
+    log = ""
+    saved_path = ""
+    status_md  = ""
+
+    for chunk in download_video(url):
+        if chunk.startswith("__RESULT__:"):
+            # Parse sentinel: __RESULT__:ok:<path> or __RESULT__:error:<msg>
+            _, kind, payload = chunk.split(":", 2)
+            if kind == "ok":
+                saved_path = payload
+                status_md  = f"✅ **Downloaded:** `{saved_path}`"
+            else:
+                status_md  = f"❌ **Error:** {payload}"
+            yield log, saved_path, status_md
+        else:
+            log += chunk
+            yield log, "", ""
+

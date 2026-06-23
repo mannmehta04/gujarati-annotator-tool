@@ -20,6 +20,10 @@ def check_dependencies():
         import pandas   # noqa: F401
     except ImportError:
         missing.append("pandas")
+    try:
+        import yt_dlp   # noqa: F401
+    except ImportError:
+        missing.append("yt-dlp")
 
     if missing:
         print(f"Installing: {missing}")
@@ -36,6 +40,17 @@ def check_dependencies():
         print("  Mac    : brew install ffmpeg")
         sys.exit(1)
 
+    # yt-dlp CLI check (warn only — Python package still works)
+    import shutil
+    if not shutil.which("yt-dlp"):
+        print("⚠️  yt-dlp CLI not found on PATH.")
+        print("   Attempting to install via pip...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--break-system-packages", "yt-dlp"],
+            check=False
+        )
+
+
 
 if __name__ == "__main__":
     check_dependencies()
@@ -43,7 +58,7 @@ if __name__ == "__main__":
     from config.settings import makeDir, PORT, HOST
     from config.settings import (
         TEMP_VIDEO_DIR, OUTPUT_DIR,
-        PREVIEW_CACHE_DIR, VIDEO_DIR
+        PREVIEW_CACHE_DIR, VIDEO_DIR, DATASET_DIR
     )
     makeDir()
 
@@ -68,6 +83,8 @@ if __name__ == "__main__":
             str(OUTPUT_DIR),
             str(PREVIEW_CACHE_DIR),
             str(VIDEO_DIR),
+            str(DATASET_DIR),
             str(SCRIPT_DIR),
         ]
     )
+
