@@ -710,33 +710,6 @@ provide a valid name.
 ## 📝 Changelog
 
 <details open>
-<summary><strong>[2.2.0] — Model Removal and Clean Pipeline</strong></summary>
-
-<br/>
-
-**Removed**
-- `models/annotation.py` — isolated class with no active use
-  in the current pipeline. All data flows as plain Python dicts.
-- `models/` directory — now empty after model removal
-- All imports of `models.annotation` from every file
-- All instantiation of `Annotation` class — replaced with dicts
-
-**Changed**
-- `controllers/extractor.py` — builds annotation dict directly,
-  no model class instantiation
-- Environment setup documentation — switched to **Conda**
-  from virtualenv/venv across all instructions
-- `README.md` — full rewrite with interactive collapsible sections,
-  badges, tables, architecture diagram, and conda-first setup
-
-**Added**
-- `environment.yml` export instructions for reproducible setup
-- Comprehensive troubleshooting section in README
-- Dependency table with purpose descriptions
-
-</details>
-
-<details>
 <summary><strong>[2.1.0] — Spectrogram Analysis Module</strong></summary>
 
 <br/>
