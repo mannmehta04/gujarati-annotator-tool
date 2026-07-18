@@ -2,7 +2,7 @@
 
 # 🎭 Natak Annotation Tool
 
-**A cloud-native browser tool for annotating Rasa in Marathi theatrical speech**
+**A cloud-native browser tool for annotating Rasa in Gujarati theatrical speech**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Gradio](https://img.shields.io/badge/Gradio-4.x-ff7c00?style=flat-square&logo=gradio&logoColor=white)](https://gradio.app)
@@ -13,7 +13,7 @@
 
 <br/>
 
-*Natak (नाटक) — Marathi word for theatrical play*
+*Natak (નાટક) — Gujarati word for theatrical play*
 
 <br/>
 
@@ -873,7 +873,7 @@ provide a valid name.
 
 <div align="center">
 
-**Built for the study of Rasa in Marathi theatrical speech**
+**Built for the study of Rasa in Gujarati theatrical speech**
 
 *Hasya · Karuna · Rudra · Shant · Bhayanak · Veer · Adbhuta · Shringara*
 
