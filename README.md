@@ -710,7 +710,7 @@ provide a valid name.
 ## 📝 Changelog
 
 <details open>
-<summary><strong>[2.1.0] — Model Removal and Clean Pipeline</strong></summary>
+<summary><strong>[2.2.0] — Model Removal and Clean Pipeline</strong></summary>
 
 <br/>
 
@@ -737,120 +737,143 @@ provide a valid name.
 </details>
 
 <details>
+<summary><strong>[2.1.0] — Spectrogram Analysis Module</strong></summary>
+
+<br/>
+
+**Added**
+- `controllers/spectrogram_analysis.py` with full pipeline:
+  - `_ext_seg` — non-silent segment extraction
+  - `_norm_spect` — FFT normalized spectrum computation
+  - `_compute_mean_spectrum` — mean + stack over segments
+  - `analyse_segment_spectrogram` — main entry point
+- `handle_analyse_spectrum` in `views/handlers.py`
+- `analyse_spectrum_btn` in segment detail panel
+- `spectrogram_group`, `spectrogram_image` (gr.Image)
+- `spectrogram_status_outer` for error display
+- Dark-themed three-panel matplotlib figure
+- Dependencies: `librosa>=0.10.0`, `matplotlib>=3.7.0`,
+  `scipy>=1.10.0`
+
+</details>
+
+<details>
 <summary><strong>[2.0.0] — Cloud Migration Release</strong></summary>
 
 <br/>
 
 **Breaking Changes**
 - Removed all local file storage for extracted segments
-- Removed `annotations/annotations.csv`
+- Removed `annotations/annotations.csv` — all data now in Supabase
 - Removed `OUTPUT_DIR` and `ANNOTATIONS_CSV` settings
+- Annotation extraction no longer writes audio or video files to disk
 
 **Added**
 - `controllers/media_extractor.py` — on-demand ffmpeg extraction
-- `controllers/spectrogram_analysis.py` — spectrum analysis pipeline
-- FastAPI streaming routes for audio/video
+  for browser streaming, with no permanent file storage
+- FastAPI streaming routes:
+  - `GET /segment/audio/{id}` — inline audio stream
+  - `GET /segment/video/{id}` — inline video stream
+  - `GET /segment/download/audio/{id}` — audio download
+  - `GET /segment/download/video/{id}` — video download
 - `fetch_annotation_by_id` in `supabase_sync.py`
 - On-demand zip download for all segments in a Rasa
-- Delete confirmation popup overlay
+- Delete confirmation popup overlay with full segment details
 - Spectral Analysis panel in segment detail view
-- Video Name field (mandatory, part of segment ID)
-- Hardened video name validation
-- Waveform audio player
+- Three-panel spectrogram plot (waveform, Fn 1–8, Fn 1–2)
+- Video Name field in Annotation Tab (mandatory, part of segment ID)
+- Hardened video name validation — rejects `[object Object]`,
+  `undefined`, `null`, and empty values
+- Waveform audio player in segment detail panel
+- `.env.example` for environment configuration
 
 **Changed**
-- `extractor.py` — metadata only, no ffmpeg at annotation time
-- `supabase_sync.py` — confirmed column names throughout
-- `handle_segment_row_selected` — streaming URLs to players
-- Segment ID format to include video name
+- `controllers/extractor.py` — now records metadata only,
+  no ffmpeg at annotation time, no file writes
+- `controllers/supabase_sync.py` — confirmed column names:
+  `id`, `source_video`, `start_time`, `end_time`, `duration`,
+  `label`, `notes`, `audio_file`, `video_file`, `timestamp`
+- `annotation_object_to_supabase_dict` — uses confirmed schema,
+  `audio_file` and `video_file` stored as empty strings
+- `parse_annotations_to_segments` — reads `label` and
+  `source_video` with no aliases
+- `handle_segment_row_selected` — passes streaming URLs to
+  players instead of local file paths
+- Segment ID format: `{video_name}_{label}_{YYYYMMDD}_{HHMMSS}_{µs}`
 
 **Removed**
 - Local audio/video file extraction at annotation time
-- `annotations/` directory and CSV
-- `OUTPUT_DIR` and `ANNOTATIONS_CSV` settings
-- `_resolve_segment_path` — replaced by URL-based approach
-- Audio Only / Video Only filter modes
-- Download buttons from detail panel (now via routes)
-- Supabase Storage bucket usage
+- `annotations/annotations.csv` and `annotations/` directory
+- `OUTPUT_DIR` and `ANNOTATIONS_CSV` from settings
+- `_resolve_segment_path` — replaced by `_get_media_url`
+- "Audio Only" and "Video Only" filter modes from segments tab
+- Download buttons from segment detail panel (moved to routes)
+- Supabase Storage bucket usage — not needed, no files stored
 
 </details>
 
 <details>
-<summary><strong>[1.5.0] — Extracted Segments Tab Overhaul</strong></summary>
+<summary><strong>[1.2.0] — Extracted Segments Tab Overhaul</strong></summary>
 
 <br/>
 
 **Added**
-- Stats strip with per-Rasa pill cards
-- Filter sidebar with view mode and Rasa dropdown
-- Segment identity card with timing badges
+- Full UI overhaul of the Extracted Segments Tab
+- Stats strip with total count and per-Rasa pill cards
+- Filter sidebar with view mode radio and Rasa dropdown
+- How-to-use tips panel in sidebar
+- Segment identity card with timing badges in detail panel
+- Media preview section with video (left) and audio (right)
 - Load Audio / Load Video preview buttons
-- Enhanced Analyse Spectrum button
-- Global CSS for all button and table styles
+- Spectral Analysis section with explanatory description
+- Enhanced Analyse Spectrum button (primary, large, gradient)
+- Global CSS block for all button and table styles
+- Decorative section dividers in detail panel
+- Action row with Close Panel and Delete Annotation buttons
 
 **Changed**
-- `_build_segments_summary_html` — rasa color palette
-- `_build_segment_detail_html` — identity card layout
-- `_build_segments_dataframe` — columns: `#, Rasa, Duration, Timing, Source, Annotated`
+- `_build_segments_summary_html` — rasa color palette,
+  horizontally scrollable pills, large total count block
+- `_build_segment_detail_html` — identity card with label badge,
+  timing badges, source code block, notes block
+- `_build_segments_dataframe` — new columns:
+  `#, Rasa, Duration, Timing, Source, Annotated`
+- Segments table has larger row height and hover styling
+- Audio player uses green waveform colors (`#34d399`)
 
 **Removed**
-- Download Audio / Download Video buttons from detail panel
+- Download Audio and Download Video buttons from detail panel
 - Audio Only / Video Only filter options
 
 </details>
 
 <details>
-<summary><strong>[1.4.0] — Delete Confirmation Popup</strong></summary>
+<summary><strong>[1.1.0] — On-Demand Streaming Architecture</strong></summary>
 
 <br/>
 
 **Added**
-- Full-screen fixed overlay popup for delete confirmation
-- Segment details shown in confirmation dialog
-- Hidden Gradio buttons triggered via JavaScript
-- CSS accessibility hiding pattern
+- `controllers/media_extractor.py`:
+  - `extract_audio_to_tempfile` — WAV to temp file
+  - `extract_video_to_tempfile` — MP4 to temp file
+  - `extract_audio_bytes` — WAV as bytes
+  - `extract_video_bytes` — MP4 as bytes
+  - `extract_zip_for_rasa` — batch zip creation
+- FastAPI streaming routes in `app.py`
+- `fetch_annotation_by_id` in `supabase_sync.py`
+- `handle_load_audio_preview` — loads audio via ffmpeg,
+  passes temp file path to `gr.Audio`
+- `handle_load_video_preview` — loads video via ffmpeg
+- `load_audio_btn` and `load_video_btn` in detail panel
+- `_check_source_available` — checks URL vs local path
+- `_find_segment_by_id` — segment lookup helper
+- `_build_download_links_html` — HTML anchor download links
 
-**Fixed**
-- Delete button was locking UI — popup buttons now functional
-- JavaScript selector pattern using `getElementById` + `querySelector`
-
-</details>
-
-<details>
-<summary><strong>[1.3.0] — Spectrogram Analysis Module</strong></summary>
-
-<br/>
-
-**Added**
-- `controllers/spectrogram_analysis.py`
-- Three-panel normalized spectrum plot
-- `handle_analyse_spectrum` handler
-- `librosa`, `scipy`, `matplotlib` dependencies
-
-</details>
-
-<details>
-<summary><strong>[1.2.0] — On-Demand Streaming</strong></summary>
-
-<br/>
-
-**Added**
-- `controllers/media_extractor.py`
-- FastAPI streaming routes
-- Load Audio / Load Video handlers
-- `_check_source_available`, `_find_segment_by_id`
-
-</details>
-
-<details>
-<summary><strong>[1.1.0] — Supabase Schema Alignment</strong></summary>
-
-<br/>
-
-**Fixed**
-- Rasa and Source showing as N/A in segments table
-- Wrong column names in Supabase queries
-- All references updated to confirmed schema columns
+**Changed**
+- `handle_segment_row_selected` — shows metadata only on
+  row click, media loaded on separate button click
+- Gradio `gr.Audio` uses `type="filepath"` with waveform display
+- `gr.Audio` receives temp file path (not URL) for waveform
 
 </details>
 
@@ -860,12 +883,19 @@ provide a valid name.
 <br/>
 
 **Added**
-- Annotation Tab with video player
+- Annotation Tab with video player and timestamp capture
+- URL and local folder source video modes
+- Rasa label selector
 - Segment extraction via ffmpeg to local disk
-- `annotations.csv` for local storage
+- `annotations/annotations.csv` for local storage
+- Extracted Segments Tab with basic table
 - Supabase sync for cloud backup
-- Basic Extracted Segments Tab
-- Download Tab
+- Download Tab for local file downloads
+- `controllers/extractor.py` with full ffmpeg pipeline
+- `controllers/supabase_sync.py` for Supabase operations
+- `views/ui.py` and `views/handlers.py`
+- `config/settings.py` with `OUTPUT_DIR` and `ANNOTATIONS_CSV`
+- `models/annotation.py`
 
 </details>
 
