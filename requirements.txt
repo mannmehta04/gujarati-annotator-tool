@@ -1,11 +1,19 @@
+# ── Web framework ─────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
+
+# ── Gradio UI ─────────────────────────────────────────────────────
 gradio>=4.0.0
-pandas>=1.5.0
+
+# ── Supabase ──────────────────────────────────────────────────────
+supabase
+
+# ── Audio / Video analysis ────────────────────────────────────────
 yt-dlp>=2024.1.0
 httpx>=0.24.0
-uvicorn>=0.22.0
-requests>=2.28.0
-supabase>=2.0.0
-
 librosa>=0.10.0
-matplotlib>=3.7.0
+numpy
 scipy>=1.10.0
+matplotlib>=3.7.0
+soundfile

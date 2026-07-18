@@ -17,10 +17,6 @@ def check_dependencies():
     except ImportError:
         missing.append("gradio")
     try:
-        import pandas   # noqa: F401
-    except ImportError:
-        missing.append("pandas")
-    try:
         import yt_dlp   # noqa: F401
     except ImportError:
         missing.append("yt-dlp")

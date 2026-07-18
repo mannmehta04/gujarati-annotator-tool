@@ -32,7 +32,6 @@ from controllers.extractor import (
     scan_folder,
 )
 
-from models.annotation import get_stats
 
 
 # ── Existing annotation handlers ───────────────────────────────
@@ -83,7 +82,7 @@ def on_extract(video_source: str, start, end, video_name: str, label: str, notes
             "in the **🏷️ Video Name** field before clicking Extract.\n\n"
             "**Example:** `lalyo_laptayo`, `v1`, `natak2`\n\n"
             "_Use letters, numbers, and underscores only._",
-            get_stats(),
+            "Cloud Sync enabled. View Extracted Segments tab for stats.",
             gr.update(visible=False),
             segments_data_state,
         )
@@ -95,7 +94,7 @@ def on_extract(video_source: str, start, end, video_name: str, label: str, notes
             video_source, start, end, video_name, label, notes
         )
         
-        stats = get_stats()
+        stats = "Cloud Sync enabled. View Extracted Segments tab for stats."
         
         if error:
             return (
@@ -124,7 +123,7 @@ def on_extract(video_source: str, start, end, video_name: str, label: str, notes
     except Exception as e:
         return (
             f"❌ Extraction error: {str(e)}",
-            get_stats(),
+            "Cloud Sync enabled. View Extracted Segments tab for stats.",
             gr.update(value=f"❌ Sync error: {str(e)}", visible=True),
             segments_data_state,
         )

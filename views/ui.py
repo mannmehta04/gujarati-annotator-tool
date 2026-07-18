@@ -14,7 +14,6 @@ from pathlib import Path
 
 from config.settings import LABELS, VIDEO_DIR
 from controllers.extractor import scan_videos
-from models.annotation import get_stats
 from views.handlers import (
     # Existing annotation handlers
     on_load_video,
@@ -738,7 +737,7 @@ def build_ui() -> gr.Blocks:
                         result_md = gr.Markdown("")
                         cloud_sync_status_md = gr.Markdown("", visible=False)
 
-                stats_md = gr.Markdown(get_stats())
+                stats_md = gr.Markdown("Cloud Sync enabled. View Extracted Segments tab for stats.")
 
             # ════════════════════════════════════════════════════
             #  TAB 3 — EXTRACTED SEGMENTS
