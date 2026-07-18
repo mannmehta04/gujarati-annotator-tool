@@ -2,8 +2,8 @@
 """
 View layer.
 Builds the entire Gradio UI layout — two tabs:
-  Tab 1: 📥 Download  — URL input, yt-dlp streaming log
-  Tab 2: 🎬 Annotate  — existing annotation workflow
+  Tab 1: 📥 Download  — URL input, yt-dlp streaming log  [UNCHANGED]
+  Tab 2: 🎬 Annotate  — source mode toggle (Local Folder / URL) + annotation
 
 No business logic. No ffmpeg. No CSV.
 Imports handlers for event wiring only.
@@ -14,23 +14,81 @@ from pathlib import Path
 
 from config.settings import LABELS, VIDEO_DIR
 from controllers.extractor import scan_videos
-from models.annotation import build_segment_choices, get_stats
+from models.annotation import get_stats
 from views.handlers import (
+    # Existing annotation handlers
     on_load_video,
     on_time_change,
     on_extract,
-    on_segment_flush,
-    on_segment_load,
-    on_refresh,
-    on_delete_request,
-    on_confirm_delete,
-    on_download_video,
+    
+    # New Extracted Segments Handlers
+    handle_segment_row_selected,
+    handle_fetch_supabase_segments,
+    handle_view_mode_changed,
+    handle_rasa_filter_changed,
+    handle_delete_segment,
+    handle_show_delete_confirm,
+    handle_cancel_delete_confirm,
+    handle_analyse_spectrum,
+    _build_rasa_filter_choices,
+    _build_view_mode_choices,
+    _build_table_headers,
+    _build_table_datatypes,
+    
+    # Download tab handler
+    handle_fetch_video_info_with_progress,
+    handle_update_download_link,
+    # Source mode handlers
+    handle_source_toggle,
+    handle_load_folder,
+    handle_avail_video_select,
+    handle_load_url,
+    scan_folder_full,
+    handle_clear_video,
 )
+
+# Removed module-level cache load to prevent stale state on hot-reload
 
 
 # ── Static assets ──────────────────────────────────────────────
 
-CUSTOM_CSS = """
+_HIDE_FOOTER_CSS = """
+/* Hide Gradio footer elements */
+footer {
+    display: none !important;
+}
+
+/* Hide 'Built with Gradio' */
+.built-with-gradio {
+    display: none !important;
+}
+
+/* Hide 'Use via API' button */
+.api-docs-button {
+    display: none !important;
+}
+
+/* Hide settings gear icon */
+.settings-button {
+    display: none !important;
+}
+
+/* Hide the entire footer bar */
+gradio-app > div > footer,
+.footer,
+#footer {
+    display: none !important;
+}
+
+/* Gradio 4.x specific selectors */
+.gr-footer,
+[class*="footer"],
+[id*="footer"] {
+    display: none !important;
+}
+"""
+
+CUSTOM_CSS = _HIDE_FOOTER_CSS + """
 /* ── Layout ── */
 .gradio-container { max-width:100% !important; padding:10px !important; }
 h1  { font-size:22px !important; margin:4px 0 !important; }
@@ -73,7 +131,7 @@ button { font-size:13px !important; padding:7px 11px !important; }
 }
 .load-btn button:hover { background: #0d47a1 !important; }
 
-/* ── Download button ── */
+/* ── Download button (Download tab) ── */
 .download-btn button {
     background   : #6a1b9a !important;
     color        : white   !important;
@@ -114,17 +172,21 @@ button { font-size:13px !important; padding:7px 11px !important; }
     text-align : center !important;
 }
 
-/* ── Path input ── */
-.path-input input {
-    font-family: monospace !important;
-    font-size  : 12px      !important;
-}
-
 /* ── URL input ── */
 .url-input input {
     font-family : monospace !important;
     font-size   : 13px      !important;
 }
+
+/* ── Load URL button (Annotate tab) ── */
+.load-url-btn button {
+    background   : #6a1b9a !important;
+    color        : white   !important;
+    font-size    : 13px    !important;
+    padding      : 9px     !important;
+    border-radius: 6px     !important;
+}
+.load-url-btn button:hover { background: #4a148c !important; }
 
 /* ── Delete button ── */
 .delete-btn button {
@@ -299,31 +361,15 @@ def build_ui() -> gr.Blocks:
     Construct and return the fully wired Gradio Blocks app.
     Called once from app.py.
     """
+    # Scan dataset/ for the Available Videos accordion initial state.
+    # These full paths are shown in the accordion but no auto-load happens.
     all_videos = scan_videos()
-    default_path = all_videos[0] if all_videos else ""
-    video_list_md = (
-        "**Available videos in dataset/:**\n\n" +
-        "\n\n".join(f"`{p}`" for p in all_videos)
-    ) if all_videos else "⚠️ No videos found in dataset/"
-
-    init_choices, init_summary, init_seg_map = build_segment_choices()
 
     with gr.Blocks(title="Video Annotator") as app:
 
         gr.Markdown("# 🎬 Video Annotator")
-        gr.HTML("""
-        <div style="background:#667eea;color:white;padding:8px;
-                    border-radius:5px;text-align:center;
-                    font-size:12px;margin-bottom:6px;">
-            <b>A</b>=Start &nbsp;|&nbsp; <b>D</b>=End &nbsp;|&nbsp;
-            <b>E</b>=Extract &nbsp;|&nbsp;
-            <b>Space</b>=Play/Pause &nbsp;|&nbsp;
-            <b>←/→</b>=±5s &nbsp;|&nbsp;
-            <b>Shift+←/→</b>=±1s
-        </div>
-        """)
-
-        seg_map_state = gr.State(init_seg_map)
+        
+        segments_data_state = gr.State(None)
 
         # ── Two-tab layout ────────────────────────────────────────
         with gr.Tabs() as tabs:
@@ -334,84 +380,318 @@ def build_ui() -> gr.Blocks:
             with gr.Tab("📥 Download Video", id="tab-download"):
 
                 gr.Markdown(
-                    "### Download a video from YouTube or any URL\n"
-                    f"Videos are saved directly to `dataset/` and immediately available for annotation."
+                    "### Download a video directly to your device\n"
+                    f"Videos stream through the server and are saved directly to your browser's download folder. Zero server storage."
                 )
 
-                with gr.Row():
-                    url_input = gr.Textbox(
-                        label="🔗 Video URL",
-                        placeholder="https://www.youtube.com/watch?v=... or any direct video URL",
-                        scale=5,
-                        elem_classes=["url-input"]
-                    )
-                    download_btn = gr.Button(
-                        "⬇️ Download",
-                        scale=1,
-                        elem_classes=["download-btn"]
-                    )
-
-                download_log = gr.Textbox(
-                    label="📋 Download Log",
-                    lines=14,
-                    max_lines=14,
-                    interactive=False,
-                    placeholder="Download progress will appear here…",
-                    elem_classes=["download-log"],
-                    autoscroll=True,
+                # Row 1: URL Input
+                url_input = gr.Textbox(
+                    label="🔗 Video URL",
+                    placeholder="Paste YouTube or video URL here...",
+                    lines=1,
+                    elem_classes=["url-input"]
                 )
 
-                download_status = gr.Markdown("")
+                # Row 2: Fetch Info Button + Status
+                fetch_info_btn = gr.Button("🔍 Fetch Video Info", variant="secondary")
+                
+                fetch_progress = gr.HTML(
+                    value="",       # Empty on init — not shown until search starts
+                    visible=False,  # Hidden initially — shown only during fetch
+                )
+                
+                fetch_status = gr.Markdown(value="", visible=False)
 
-                # Hidden state holding the downloaded path
-                downloaded_path_state = gr.State("")
+                # Row 3: Video Info Display (shown after fetch)
+                video_info_display = gr.HTML(value="", visible=False)
 
-                with gr.Row(visible=False) as after_download_row:
-                    goto_annotate_btn = gr.Button(
-                        "🎬 Go to Annotate Tab →",
-                        elem_classes=["goto-annotate-btn"]
+                # Row 4: Download Options (shown after fetch)
+                with gr.Group(visible=False) as download_options_group:
+                    
+                    # Format selector — populated after fetch, shows specific format IDs
+                    format_selector = gr.Dropdown(
+                        choices=[],
+                        value=None,
+                        label="🎬 Specific Format (optional — overrides Quality if selected)",
+                        interactive=True,
+                        allow_custom_value=False,
                     )
 
-                gr.Markdown(
-                    "---\n"
-                    "💡 **Tips:** Paste any YouTube, Vimeo, or direct `.mp4` URL.  \n"
-                    "yt-dlp automatically picks the best quality and merges into MP4.  \n"
-                    "After download, the video is auto-loaded in the **Annotate** tab."
-                )
+                # Download link — this is what triggers the actual browser download
+                # Using gr.HTML to render an <a> tag with the download URL
+                download_link_html = gr.HTML(value="", visible=False)
 
             # ════════════════════════════════════════════════════
             #  TAB 2 — ANNOTATE
             # ════════════════════════════════════════════════════
             with gr.Tab("🎬 Annotate", id="tab-annotate"):
 
-                # ── Path input ───────────────────────────────────────────
-                with gr.Row():
-                    video_path_input = gr.Textbox(
-                        label="📁 Video Path — paste full path, press Enter or Load",
-                        value=default_path,
-                        placeholder="/path/to/your/video.mp4",
-                        scale=5,
-                        elem_classes=["path-input"]
-                    )
-                    load_btn = gr.Button(
-                        "📂 Load Video", scale=1,
-                        elem_classes=["load-btn"]
+                # ── Session state ─────────────────────────────────────
+                # source_state: resolved local path or stream URL fed to extractor.
+                # Starts empty — no auto-load on page open (Fix 4).
+                source_state = gr.State("")
+
+                # folder_state: current folder path (Local Folder mode only)
+                folder_state = gr.State("")
+                
+                # available_videos_state: stores the available videos list across tab switches
+                available_videos_state = gr.State([])
+
+                # ── Source mode toggle ────────────────────────────────
+                gr.Markdown("### 📂 Video Source")
+                source_mode_radio = gr.Radio(
+                    choices=["Local Folder", "URL"],
+                    value="Local Folder",
+                    label="Source Mode",
+                    show_label=False,
+                    interactive=True,
+                )
+
+                # ── LOCAL FOLDER section (visible by default) ─────────
+                with gr.Column(visible=True) as folder_section:
+                    # gr.File with file_count="directory" opens the OS folder picker.
+                    # Gradio 4.x returns a list of file objects; we derive the
+                    # folder path from os.path.dirname(files[0].name) in the handler.
+                    folder_picker = gr.File(
+                        label="📁 Select Folder",
+                        file_count="directory",
+                        file_types=None,   # accept everything; we filter in handler
                     )
 
-                with gr.Accordion("📋 Available Videos (dataset/)", open=False) as avail_accordion:
-                    avail_videos_md = gr.Markdown(video_list_md)
+                # ── URL STREAMING section (hidden by default) ─────────
+                with gr.Column(visible=False) as url_section:
+                    with gr.Row():
+                        annotate_url_input = gr.Textbox(
+                            label="🔗 Video URL",
+                            placeholder="https://example.com/video.mp4  or  https://youtube.com/watch?v=...",
+                            scale=5,
+                            elem_classes=["url-input"],
+                        )
+                        load_url_btn = gr.Button(
+                            "▶️ Load URL",
+                            scale=1,
+                            elem_classes=["load-url-btn"],
+                        )
 
-                # ── Main row ─────────────────────────────────────────────
+                # ── Available Videos accordion ─────────────────────────
+                # Populated when the user selects a folder via the folder picker.
+                # Items are full absolute paths — clicking one loads the video.
+                # Starts empty (no auto-scan on page open — Fix 4).
+                with gr.Accordion("📋 Available Videos", open=False, visible=False) as avail_accordion:
+                    avail_radio = gr.Radio(
+                        choices=all_videos,   # full paths from dataset/ — read-only initial list
+                        label="Click a video to load it",
+                        value=None,
+                        interactive=True,
+                    )
+
+                # ── Main row — video player + annotation controls ─────
                 with gr.Row():
                     with gr.Column(scale=3):
+                        # Local file mode player (gr.Video).
+                        # Visible by default (Local Folder mode is default).
+                        # IMPORTANT: Never pass a stream URL to this component —
+                        # Gradio proxies gr.Video URLs through /tmp/gradio/, downloading
+                        # the entire stream to server disk. Only local file paths go here.
                         video_player = gr.Video(
-                            label="", height=400, show_label=False
+                            label="", height=400, show_label=False,
+                            value=None, visible=True
                         )
+
+                        clear_video_btn = gr.Button(
+                            value="🗑️ Clear Video", variant="secondary", size="sm", visible=True
+                        )
+
+                        # URL mode player (gr.HTML with native HTML5 <video> tag).
+                        # Hidden by default; shown when source mode = "URL".
+                        # The browser fetches the stream URL directly — zero server
+                        # disk usage. Gradio's caching pipeline is bypassed entirely.
+                        url_player = gr.HTML(
+                            value="",
+                            visible=True,
+                        )
+
                         video_status = gr.Markdown(
-                            "*Enter a path above and click Load*"
+                            "*Choose a source above and load a video*"
                         )
 
                     with gr.Column(scale=2):
+                        shortcuts_display = gr.HTML(
+                            value="""
+                            <details style="
+                                background: #1a1a2e;
+                                border: 1px solid #2d2d4e;
+                                border-radius: 10px;
+                                padding: 0;
+                                margin: 8px 0;
+                                overflow: hidden;
+                            ">
+                                <summary style="
+                                    padding: 10px 16px;
+                                    cursor: pointer;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: #a0a0c0;
+                                    user-select: none;
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 8px;
+                                    list-style: none;
+                                ">
+                                    ⌨️ Keyboard Shortcuts
+                                    <span style="font-size:10px; color:#666; font-weight:400; margin-left:auto;">
+                                        click to expand
+                                    </span>
+                                </summary>
+                                <div style="
+                                    padding: 12px 16px;
+                                    display: grid;
+                                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                                    gap: 8px;
+                                ">
+                                    <div style="
+                                        background: #0f0f1a;
+                                        border-radius: 8px;
+                                        padding: 10px 12px;
+                                        display: flex;
+                                        align-items: center;
+                                        gap: 10px;
+                                    ">
+                                        <kbd style="
+                                            background: #2d2d4e;
+                                            color: #e0e0ff;
+                                            border: 1px solid #4d4d7e;
+                                            border-bottom: 3px solid #4d4d7e;
+                                            border-radius: 5px;
+                                            padding: 3px 8px;
+                                            font-size: 12px;
+                                            font-family: monospace;
+                                            white-space: nowrap;
+                                        ">A</kbd>
+                                        <span style="font-size:12px; color:#c0c0e0;">
+                                            Start Time
+                                        </span>
+                                    </div>
+                                    <div style="
+                                        background: #0f0f1a;
+                                        border-radius: 8px;
+                                        padding: 10px 12px;
+                                        display: flex;
+                                        align-items: center;
+                                        gap: 10px;
+                                    ">
+                                        <kbd style="
+                                            background: #2d2d4e;
+                                            color: #e0e0ff;
+                                            border: 1px solid #4d4d7e;
+                                            border-bottom: 3px solid #4d4d7e;
+                                            border-radius: 5px;
+                                            padding: 3px 8px;
+                                            font-size: 12px;
+                                            font-family: monospace;
+                                            white-space: nowrap;
+                                        ">D</kbd>
+                                        <span style="font-size:12px; color:#c0c0e0;">
+                                            End Time
+                                        </span>
+                                    </div>
+                                    <div style="
+                                        background: #0f0f1a;
+                                        border-radius: 8px;
+                                        padding: 10px 12px;
+                                        display: flex;
+                                        align-items: center;
+                                        gap: 10px;
+                                    ">
+                                        <kbd style="
+                                            background: #2d2d4e;
+                                            color: #e0e0ff;
+                                            border: 1px solid #4d4d7e;
+                                            border-bottom: 3px solid #4d4d7e;
+                                            border-radius: 5px;
+                                            padding: 3px 8px;
+                                            font-size: 12px;
+                                            font-family: monospace;
+                                            white-space: nowrap;
+                                        ">E</kbd>
+                                        <span style="font-size:12px; color:#c0c0e0;">
+                                            Extract
+                                        </span>
+                                    </div>
+                                    <div style="
+                                        background: #0f0f1a;
+                                        border-radius: 8px;
+                                        padding: 10px 12px;
+                                        display: flex;
+                                        align-items: center;
+                                        gap: 10px;
+                                    ">
+                                        <kbd style="
+                                            background: #2d2d4e;
+                                            color: #e0e0ff;
+                                            border: 1px solid #4d4d7e;
+                                            border-bottom: 3px solid #4d4d7e;
+                                            border-radius: 5px;
+                                            padding: 3px 8px;
+                                            font-size: 12px;
+                                            font-family: monospace;
+                                            white-space: nowrap;
+                                        ">Space</kbd>
+                                        <span style="font-size:12px; color:#c0c0e0;">
+                                            Play/Pause
+                                        </span>
+                                    </div>
+                                    <div style="
+                                        background: #0f0f1a;
+                                        border-radius: 8px;
+                                        padding: 10px 12px;
+                                        display: flex;
+                                        align-items: center;
+                                        gap: 10px;
+                                    ">
+                                        <kbd style="
+                                            background: #2d2d4e;
+                                            color: #e0e0ff;
+                                            border: 1px solid #4d4d7e;
+                                            border-bottom: 3px solid #4d4d7e;
+                                            border-radius: 5px;
+                                            padding: 3px 8px;
+                                            font-size: 12px;
+                                            font-family: monospace;
+                                            white-space: nowrap;
+                                        ">←/→</kbd>
+                                        <span style="font-size:12px; color:#c0c0e0;">
+                                            Seek ±5s
+                                        </span>
+                                    </div>
+                                    <div style="
+                                        background: #0f0f1a;
+                                        border-radius: 8px;
+                                        padding: 10px 12px;
+                                        display: flex;
+                                        align-items: center;
+                                        gap: 10px;
+                                    ">
+                                        <kbd style="
+                                            background: #2d2d4e;
+                                            color: #e0e0ff;
+                                            border: 1px solid #4d4d7e;
+                                            border-bottom: 3px solid #4d4d7e;
+                                            border-radius: 5px;
+                                            padding: 3px 8px;
+                                            font-size: 12px;
+                                            font-family: monospace;
+                                            white-space: nowrap;
+                                        ">Shift+←/→</kbd>
+                                        <span style="font-size:12px; color:#c0c0e0;">
+                                            Seek ±1s
+                                        </span>
+                                    </div>
+                                </div>
+                            </details>
+                            """,
+                            visible=True,
+                        )
                         with gr.Row():
                             with gr.Column():
                                 gr.Markdown("**Start (A)**")
@@ -439,8 +719,16 @@ def build_ui() -> gr.Blocks:
                             choices=LABELS, value=LABELS[0],
                             show_label=False
                         )
+                        
+                        video_name_input = gr.Textbox(
+                            label="Video Name (for ID)",
+                            value="",
+                            placeholder="Enter a video name (Required)",
+                            info="Required for extraction",
+                            lines=1
+                        )
 
-                        notes_text  = gr.Textbox(label="Notes", lines=2)
+                        notes_text = gr.Textbox(label="Notes", lines=2)
 
                         extract_btn = gr.Button(
                             "✂️ EXTRACT (E)", variant="primary", size="lg",
@@ -448,202 +736,466 @@ def build_ui() -> gr.Blocks:
                             elem_id="extract-btn"
                         )
                         result_md = gr.Markdown("")
+                        cloud_sync_status_md = gr.Markdown("", visible=False)
 
                 stats_md = gr.Markdown(get_stats())
 
-                # ── Segments + Preview row ────────────────────────────────
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        gr.Markdown("## 📋 All Segments")
+            # ════════════════════════════════════════════════════
+            #  TAB 3 — EXTRACTED SEGMENTS
+            # ════════════════════════════════════════════════════
+            # ══════════════════════════════════════════════════════════
+            #  EXTRACTED SEGMENTS TAB (Supabase)
+            # ══════════════════════════════════════════════════════════
+            with gr.Tab("📊 Extracted Segments", id="extracted_tab"):
+                gr.Markdown("# 📊 Extracted Segments (Supabase)")
+                selected_segment_id = gr.State("")
 
-                        seg_summary_md = gr.Markdown(init_summary)
-
-                        segment_radio = gr.Radio(
-                            choices     = init_choices,
-                            label       = "Select a segment",
-                            value       = None,
-                            interactive = True
+                gr.Markdown("View, filter, and download your extracted video and audio segments synced from Supabase.")
+                
+                with gr.Row(variant="panel"):
+                    refresh_supabase_btn = gr.Button("🔄 Refresh from Supabase", variant="primary", scale=1)
+                    
+                supabase_status_display = gr.HTML("")
+                
+                with gr.Group(visible=False) as segments_summary_group:
+                    segments_summary_html = gr.HTML("")
+                    
+                with gr.Group(visible=False) as segments_filter_group:
+                    with gr.Row():
+                        view_mode_radio = gr.Radio(
+                            choices=_build_view_mode_choices(),
+                            value="All Segments",
+                            label="View Mode",
+                            interactive=True,
                         )
-
-                        with gr.Row():
-                            refresh_btn = gr.Button("🔄 Refresh", scale=1)
-                            delete_btn  = gr.Button(
-                                "🗑️ Delete Selected",
-                                scale        = 1,
-                                elem_classes = ["delete-btn"]
+                        with gr.Column():
+                            rasa_filter_dropdown = gr.Dropdown(
+                                choices=_build_rasa_filter_choices(),
+                                value="All",
+                                label="Filter by Rasa",
+                                visible=False
                             )
+                        segments_count_html = gr.HTML("")
+                        
+                with gr.Group(visible=False) as segments_table_group:
+                    segments_dataframe = gr.Dataframe(
+                        headers=_build_table_headers(),
+                        datatype=_build_table_datatypes(),
+                        interactive=False,
+                        wrap=True
+                    )
+                    
+                with gr.Group(visible=False) as segment_detail_group:
+                    segment_detail_html = gr.HTML("")
+                    with gr.Row():
+                        video_preview = gr.HTML(label="Video Preview", visible=False)
+                        audio_preview = gr.Audio(
+                            value=None,
+                            label="Audio Preview",
+                            type="filepath",
+                            interactive=False,
+                            visible=False,
+                            waveform_options=gr.WaveformOptions(
+                                waveform_color="#7eb8f7",
+                                waveform_progress_color="#3b82f6",
+                                trim_region_color="#f59e0b22",
+                                # show_controls=True,
+                            ),
+                            # show_download_button=False,
+                        )
+                    # ── Spectrogram Analysis Section ──────────────────────────────────
+                    # Added inside detail_group, below download_links_html,
+                    # above the close/delete button row
 
-                        delete_status_md = gr.Markdown(
-                            "", elem_classes=["delete-status"]
+                    # ── Spectral Analysis Section ──────────────────────────────────────
+                    gr.HTML("""
+                    <div style="
+                        margin: 18px 0 10px 0;
+                        padding: 14px 18px 10px 18px;
+                        background: linear-gradient(135deg, #0f1f3d 0%, #1a1a2e 100%);
+                        border-radius: 12px;
+                        border: 1px solid #2d4a7a;
+                        border-left: 4px solid #7eb8f7;
+                    ">
+                        <div style="
+                            display: flex;
+                            align-items: center;
+                            gap: 10px;
+                            margin-bottom: 4px;
+                        ">
+                            <span style="font-size: 20px;">📊</span>
+                            <div>
+                                <div style="
+                                    font-size: 14px;
+                                    font-weight: 700;
+                                    color: #e0e8ff;
+                                    letter-spacing: 0.3px;
+                                ">Spectral Analysis</div>
+                                <div style="
+                                    font-size: 11px;
+                                    color: #6b82a8;
+                                    margin-top: 2px;
+                                ">
+                                    Computes normalized spectrum with 95% CI across
+                                    sampled segments — extracts audio on demand
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    """)
+
+                    analyse_spectrum_btn = gr.Button(
+                        "📊  Analyse Spectrum",
+                        variant="primary",
+                        size="lg",
+                        elem_id="analyse_spectrum_btn",
+                        elem_classes=["natak-analyse-btn"],
+                    )
+
+                    gr.HTML("""
+                    <style>
+                    /* Analyse Spectrum button — enhanced styling */
+                    #analyse_spectrum_btn button,
+                    .natak-analyse-btn button {
+                        background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 50%, #1d3a8a 100%) !important;
+                        border: 1.5px solid #3b82f6 !important;
+                        border-radius: 10px !important;
+                        color: #ffffff !important;
+                        font-size: 15px !important;
+                        font-weight: 700 !important;
+                        letter-spacing: 0.5px !important;
+                        padding: 14px 28px !important;
+                        box-shadow:
+                            0 4px 15px rgba(59, 130, 246, 0.35),
+                            0 2px 6px rgba(0, 0, 0, 0.4),
+                            inset 0 1px 0 rgba(255,255,255,0.1) !important;
+                        transition: all 0.2s ease !important;
+                        width: 100% !important;
+                    }
+
+                    #analyse_spectrum_btn button:hover,
+                    .natak-analyse-btn button:hover {
+                        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 50%, #1e40af 100%) !important;
+                        border-color: #60a5fa !important;
+                        box-shadow:
+                            0 6px 20px rgba(59, 130, 246, 0.5),
+                            0 3px 8px rgba(0, 0, 0, 0.4),
+                            inset 0 1px 0 rgba(255,255,255,0.15) !important;
+                        transform: translateY(-1px) !important;
+                    }
+
+                    #analyse_spectrum_btn button:active,
+                    .natak-analyse-btn button:active {
+                        transform: translateY(0px) !important;
+                        box-shadow:
+                            0 2px 8px rgba(59, 130, 246, 0.3),
+                            0 1px 3px rgba(0, 0, 0, 0.4) !important;
+                    }
+                    </style>
+                    """)
+
+                    # Spectrogram result group — hidden until analysis completes
+                    with gr.Group(visible=False) as spectrogram_group:
+
+                        spectrogram_status = gr.Markdown(
+                            value="",
+                            visible=False,
                         )
 
-                        # Single HTML block — renders segment info with
-                        # zero Gradio framing.  Empty = no border shown.
-                        confirm_html = gr.HTML(
-                            "", elem_id="confirm-html-box"
+                        spectrogram_image = gr.Image(
+                            value=None,
+                            label="Spectral Analysis",
+                            type="filepath",
+                            interactive=False,
+                            visible=False,
+                            # show_download_button=True,
+                            show_label=True,
+                            elem_id="spectrogram_image_display",
                         )
 
-                        # Confirm / Cancel buttons — hidden until delete clicked
-                        with gr.Row(visible=False) as confirm_btn_row:
-                            confirm_btn = gr.Button(
-                                "✅ Yes, Delete Permanently",
-                                scale        = 1,
-                                elem_classes = ["confirm-btn"]
-                            )
-                            cancel_btn = gr.Button(
-                                "❌ Cancel",
-                                scale        = 1,
-                                elem_classes = ["cancel-btn"]
-                            )
+                    # Status shown outside the group so errors are always visible
+                    spectrogram_status_outer = gr.Markdown(
+                        value="",
+                        visible=False,
+                    )
+                    # ── End Spectrogram Analysis Section ─────────────────────────────
 
-                        confirm_id_state = gr.State("")
+                    with gr.Row():
+                        delete_segment_btn = gr.Button("🗑️ Delete this Segment", variant="stop", visible=False)
+                        close_detail_btn = gr.Button("❌ Close Details", variant="secondary")
 
-                    with gr.Column(scale=1):
-                        gr.Markdown("## 👁️ Preview")
-                        preview_info  = gr.Markdown(
-                            "*Select a segment from the list*"
-                        )
-                        preview_audio = gr.Audio(
-                            label="Audio", type="filepath"
-                        )
-                        preview_video = gr.Video(label="Video", height=200)
+        # ── Delete Confirmation Popup Overlay ─────────────────────────────
+        delete_popup_html = gr.HTML(
+            value="",   # empty = hidden layer
+            visible=True,
+            elem_id="delete_popup_overlay",
+        )
 
-        # ── Event wiring — Annotate tab ───────────────────────────
+        # Hidden proxy elements that our inline JavaScript looks for to bridge workflows
+        with gr.Row(
+            visible=True,
+            elem_id="delete_popup_btn_row",
+            elem_classes=["natak-hidden-btn-row"],
+        ):
+            confirm_delete_btn = gr.Button(
+                "confirm_delete_hidden",
+                variant="stop",
+                elem_id="confirm_delete_hidden_btn",  # <-- Must match your JS query exactly
+                elem_classes=["natak-hidden-btn"],
+            )
+            cancel_delete_btn = gr.Button(
+                "cancel_delete_hidden",
+                variant="secondary",
+                elem_id="cancel_delete_hidden_btn",   # <-- Must match your JS query exactly
+                elem_classes=["natak-hidden-btn"],
+            )
+            
+        gr.HTML("""
+<style>
+.natak-hidden-btn-row {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0,0,0,0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+.natak-hidden-btn {
+    position: absolute !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    width: 1px !important;
+    height: 1px !important;
+}
+</style>
+""")
+        # ══════════════════════════════════════════════════════════
+        #  EVENT WIRING — DOWNLOAD TAB
+        # ══════════════════════════════════════════════════════════
+
+        # Fetch Info button click
+        fetch_info_btn.click(
+            fn=handle_fetch_video_info_with_progress,
+            inputs=[url_input],
+            outputs=[
+                fetch_progress,          
+                fetch_status,            
+                video_info_display,      
+                download_options_group,  
+                format_selector,         
+                download_link_html,      
+            ],
+        )
+
+        _download_link_inputs = [url_input, format_selector]
+        _download_link_outputs = [download_link_html]
+        
+        format_selector.change(
+            fn=handle_update_download_link,
+            inputs=_download_link_inputs,
+            outputs=_download_link_outputs,
+        )
+
+
+        # ══════════════════════════════════════════════════════════
+        #  EVENT WIRING — ANNOTATE TAB
+        # ══════════════════════════════════════════════════════════
+
+        # Shared load outputs tuple used by multiple handlers
         _load_outputs = [
             video_player, video_status,
             start_num, end_num, duration_md, result_md
         ]
 
-        load_btn.click(on_load_video, [video_path_input], _load_outputs)
-        video_path_input.submit(on_load_video, [video_path_input], _load_outputs)
+        # ── Source mode toggle ────────────────────────────────────
+        source_mode_radio.change(
+            fn      = handle_source_toggle,
+            inputs  = [source_mode_radio, available_videos_state],
+            outputs = [folder_section, url_section, video_player, url_player, avail_accordion, clear_video_btn, avail_radio],
+        )
 
+        # ── Local Folder: folder picker fires on selection ────────
+        folder_picker.change(
+            fn      = handle_load_folder,
+            inputs  = [folder_picker],
+            outputs = [avail_radio, folder_state, avail_accordion, available_videos_state],
+        )
+
+        # ── Available Videos radio: clicking a video loads it ─────
+        avail_radio.change(
+            fn      = handle_avail_video_select,
+            inputs  = [avail_radio],
+            outputs = _load_outputs + [source_state],
+        )
+
+        # ── Clear Video ───────────────────────────────────────────
+        clear_video_btn.click(
+            fn      = handle_clear_video,
+            inputs  = [],
+            outputs = [video_player, source_state, avail_radio],
+        )
+
+        # ── URL mode: Load URL button ─────────────────────────────
+        _url_load_outputs = [
+            url_player,   
+            video_status,
+            start_num, end_num, duration_md, result_md
+        ]
+        load_url_btn.click(
+            fn      = handle_load_url,
+            inputs  = [annotate_url_input],
+            outputs = _url_load_outputs + [source_state],
+        )
+
+        # ── Time inputs ───────────────────────────────────────────
         start_num.change(on_time_change, [start_num, end_num], [duration_md])
         end_num.change(on_time_change,   [start_num, end_num], [duration_md])
 
+        # ── Extract ───────────────────────────────────────────────
         extract_btn.click(
-            on_extract,
-            [video_path_input, start_num, end_num, label_radio, notes_text],
-            [result_md, stats_md, segment_radio, seg_summary_md, seg_map_state]
+            fn      = on_extract,
+            inputs  = [source_state, start_num, end_num, video_name_input, label_radio, notes_text, segments_data_state],
+            outputs = [result_md, stats_md, cloud_sync_status_md, segments_data_state],
         )
 
-        (
-            segment_radio.change(
-                on_segment_flush,
-                [segment_radio, seg_map_state],
-                [preview_audio, preview_video, preview_info]
-            )
-            .then(
-                on_segment_load,
-                [segment_radio, seg_map_state],
-                [preview_audio, preview_video, preview_info]
-            )
+
+        # ══════════════════════════════════════════════════════════
+        #  EVENT WIRING — EXTRACTED SEGMENTS TAB (Supabase)
+        # ══════════════════════════════════════════════════════════
+
+        _load_supabase_outputs = [
+            supabase_status_display,
+            segments_data_state,
+            segments_dataframe,
+            segments_summary_html,
+        ]
+        
+        refresh_supabase_btn.click(
+            fn=handle_fetch_supabase_segments,
+            inputs=[segments_data_state],
+            outputs=_load_supabase_outputs
+        ).then(
+            fn=lambda: gr.update(visible=True),
+            outputs=[segments_summary_group]
+        ).then(
+            fn=lambda: gr.update(visible=True),
+            outputs=[segments_filter_group]
+        ).then(
+            fn=lambda: gr.update(visible=True),
+            outputs=[segments_table_group]
+        ).then(
+            fn=handle_view_mode_changed,
+            inputs=[view_mode_radio, rasa_filter_dropdown, segments_data_state],
+            outputs=[segments_dataframe, segments_count_html, rasa_filter_dropdown]
         )
-
-        refresh_btn.click(
-            on_refresh,
-            [seg_map_state],
-            [segment_radio, seg_summary_md, seg_map_state]
+        
+        view_mode_radio.change(
+            fn=handle_view_mode_changed,
+            inputs=[view_mode_radio, rasa_filter_dropdown, segments_data_state],
+            outputs=[segments_dataframe, segments_count_html, rasa_filter_dropdown]
         )
-
-        # ── Delete flow ────────────────────────────────────────
-        def _populate_confirm(display_str, seg_map):
-            if not display_str:
-                return "", "", gr.update(visible=False)
-            from models.annotation import get_segment_info_for_confirmation
-            html, target_id = get_segment_info_for_confirmation(
-                display_str, seg_map
-            )
-            return html, target_id, gr.update(visible=bool(target_id))
-
-        delete_btn.click(
-            fn      = _populate_confirm,
-            inputs  = [segment_radio, seg_map_state],
-            outputs = [confirm_html, confirm_id_state, confirm_btn_row]
+        
+        rasa_filter_dropdown.change(
+            fn=handle_rasa_filter_changed,
+            inputs=[view_mode_radio, rasa_filter_dropdown, segments_data_state],
+            outputs=[segments_dataframe, segments_count_html, rasa_filter_dropdown]
         )
-
-        confirm_btn.click(
-            fn      = on_confirm_delete,
-            inputs  = [confirm_id_state],
-            outputs = [
-                delete_status_md,
-                segment_radio,
-                seg_summary_md,
-                seg_map_state,
-                stats_md,
-                preview_audio,
-                preview_video,
-                preview_info,
-                confirm_html,
-                confirm_id_state,
+        
+        segments_dataframe.select(
+            fn=handle_segment_row_selected,
+            inputs=[segments_data_state, view_mode_radio, rasa_filter_dropdown],
+            outputs=[
+                segment_detail_group, 
+                segment_detail_html, 
+                video_preview, 
+                audio_preview, 
+                selected_segment_id
             ]
         ).then(
-            fn      = lambda: gr.update(visible=False),
-            inputs  = [],
-            outputs = [confirm_btn_row]
+            fn=lambda: gr.update(visible=True),
+            outputs=[delete_segment_btn]
         )
-
-        cancel_btn.click(
-            fn      = lambda: ("", ""),
-            inputs  = [],
-            outputs = [confirm_html, confirm_id_state]
-        ).then(
-            fn      = lambda: gr.update(visible=False),
-            inputs  = [],
-            outputs = [confirm_btn_row]
+        
+        close_detail_btn.click(
+            fn=lambda: (
+                gr.update(visible=False), 
+                gr.update(value=""),
+                gr.update(value=None, visible=False),  # spectrogram_image
+                gr.update(value="", visible=False),    # spectrogram_status_outer
+                gr.update(visible=False),              # spectrogram_group
+            ),
+            outputs=[
+                segment_detail_group, 
+                delete_popup_html,
+                spectrogram_image,
+                spectrogram_status_outer,
+                spectrogram_group,
+            ]
         )
-
-        app.load(
-            on_load_video,
-            [video_path_input],
-            _load_outputs
+        # COUNT inputs: 0, COUNT outputs: 5
+        
+        analyse_spectrum_btn.click(
+            fn=handle_analyse_spectrum,
+            inputs=[
+                selected_segment_id,   # segment id
+                segments_data_state,   # full segments dict
+            ],
+            outputs=[
+                spectrogram_image,           # 1 — PNG image
+                spectrogram_status_outer,    # 2 — status message (outside group)
+                spectrogram_group,           # 3 — group visible on success
+            ],
+            show_progress="minimal",
         )
-
-        # ── Event wiring — Download tab ───────────────────────────
-
-        def _refresh_video_list():
-            """Re-scan dataset/ and return updated markdown."""
-            videos = scan_videos()
-            if videos:
-                return (
-                    "**Available videos in dataset/:**\n\n" +
-                    "\n\n".join(f"`{p}`" for p in videos)
-                )
-            return "⚠️ No videos found in dataset/"
-
-        # Download button → streaming log
-        download_btn.click(
-            fn      = on_download_video,
-            inputs  = [url_input],
-            outputs = [download_log, downloaded_path_state, download_status],
-        ).then(
-            # Show "Go to Annotate" button if we got a path
-            fn      = lambda path: gr.update(visible=bool(path)),
-            inputs  = [downloaded_path_state],
-            outputs = [after_download_row],
-        ).then(
-            # Auto-populate path input in Annotate tab
-            fn      = lambda path: path,
-            inputs  = [downloaded_path_state],
-            outputs = [video_path_input],
-        ).then(
-            # Auto-load video into player
-            fn      = on_load_video,
-            inputs  = [video_path_input],
-            outputs = _load_outputs,
-        ).then(
-            # Refresh "Available Videos" list
-            fn      = _refresh_video_list,
-            inputs  = [],
-            outputs = [avail_videos_md],
+        # COUNT inputs: 2, COUNT outputs: 3
+        
+        delete_segment_btn.click(
+            fn=handle_show_delete_confirm,
+            inputs=[selected_segment_id, segments_data_state],
+            outputs=[
+                delete_popup_html,
+                supabase_status_display,
+            ]
         )
-
-        # "Go to Annotate" button — switch tab programmatically
-        # (Gradio doesn't have a direct tab-switch API, so we
-        #  use a JS trick via gr.update on the Tabs component)
-        goto_annotate_btn.click(
-            fn      = lambda: gr.update(selected="tab-annotate"),
-            inputs  = [],
-            outputs = [tabs],
+        # COUNT inputs: 2, COUNT outputs: 2
+        
+        cancel_delete_btn.click(
+            fn=handle_cancel_delete_confirm,
+            inputs=[],
+            outputs=[
+                delete_popup_html,
+                supabase_status_display,
+            ]
+        )
+        # COUNT inputs: 0, COUNT outputs: 2
+        
+        confirm_delete_btn.click(
+            fn=handle_delete_segment,
+            inputs=[selected_segment_id, segments_data_state, view_mode_radio, rasa_filter_dropdown],
+            outputs=[
+                delete_popup_html,           # 1
+                supabase_status_display,     # 2
+                segments_data_state,         # 3
+                segments_dataframe,          # 4
+                segments_count_html,         # 5
+                segment_detail_group,        # 6
+                segment_detail_html,         # 7
+                video_preview,               # 8
+                audio_preview,               # 9
+                delete_segment_btn,          # 10
+                spectrogram_image,           # 11
+                spectrogram_status_outer,    # 12
+                spectrogram_group,           # 13
+            ]
+        ).then(
+            fn=handle_fetch_supabase_segments,
+            inputs=[segments_data_state],
+            outputs=_load_supabase_outputs
         )
 
     return app

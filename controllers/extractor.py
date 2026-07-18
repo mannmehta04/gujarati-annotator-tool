@@ -3,20 +3,31 @@
 Business logic layer.
 All ffmpeg calls, file extraction, preview cache.
 No Gradio imports. No UI logic.
+
+Supports both local file paths and HTTP(S) stream URLs as video sources.
 """
 
 import re
 import subprocess
 import shutil
 import time
+import logging
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    ch = logging.StreamHandler()
+    ch.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(ch)
 
 from config.settings import (
-    OUTPUT_DIR, LABELS,
+    LABELS,
     TEMP_VIDEO_DIR, PREVIEW_CACHE_DIR
 )
-from models.annotation import save_row
+
 
 
 # ── Helpers ────────────────────────────────────────────────────
@@ -35,6 +46,28 @@ def _sanitize_stem(stem: str) -> str:
     # Ensure it doesn't start with a dash (confuses ffmpeg arg parsing)
     stem = stem.lstrip('-') or 'clip'
     return stem
+
+
+def _is_url(source: str) -> bool:
+    """Return True if source looks like an HTTP/HTTPS URL."""
+    try:
+        parsed = urlparse(source)
+        return parsed.scheme in ('http', 'https') and bool(parsed.netloc)
+    except Exception:
+        return False
+
+
+def _url_stem(url: str) -> str:
+    """
+    Derive a clean filename stem from a URL for use in output filenames.
+    Uses the URL path's last segment, sanitized.
+    """
+    try:
+        path_part = urlparse(url).path.rstrip('/')
+        stem = Path(path_part).stem or 'stream'
+    except Exception:
+        stem = 'stream'
+    return _sanitize_stem(stem) or 'stream'
 
 
 # ── Video loading ──────────────────────────────────────────────
@@ -72,25 +105,128 @@ def load_video(path_str: str):
     )
 
 
+
 # ── Segment extraction ─────────────────────────────────────────
+
+def _generate_annotation_id(video_name, label: str) -> str:
+    """
+    Generates a unique annotation ID.
+    Format: {video_name}_{label}_{YYYYMMDD}_{HHMMSS}_{microseconds}
+
+    video_name is sanitized — spaces become underscores,
+    special characters are removed.
+
+    Defensive: if video_name is a dict, list, or non-string type,
+    falls back to 'segment' rather than producing a broken ID.
+    """
+    import re
+    from datetime import datetime
+
+    # Defensive type check — if not a plain string, use fallback
+    if not isinstance(video_name, str):
+        # Log warning so developer can trace the source
+        import logging
+        logging.getLogger('natak.extractor').warning(
+            f"_generate_annotation_id non-string video_name: "
+            f"type={type(video_name)!r}, repr={repr(video_name)[:100]}"
+        )
+        video_name = 'segment'
+    else:
+        video_name = video_name.strip()
+
+    _INVALID = {
+        '', '[object object]', 'undefined', 'null', 'none', '{}', '[]'
+    }
+    if video_name.lower() in _INVALID:
+        video_name = 'segment'
+
+    # Replace spaces with underscores, remove non-alphanumeric/underscore chars
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', video_name)
+    sanitized = re.sub(r'_+', '_', sanitized)   # Collapse multiple underscores
+    sanitized = sanitized.strip('_')
+
+    if not sanitized:
+        sanitized = 'segment'
+
+    # Sanitize label
+    if not isinstance(label, str):
+        label = str(label) if label is not None else 'unknown'
+    label_clean = re.sub(r'[^a-zA-Z0-9_]', '', label.strip())
+    if not label_clean:
+        label_clean = 'unknown'
+
+    # Generate timestamp component
+    now = datetime.now()
+    timestamp_part = now.strftime('%Y%m%d_%H%M%S')
+    micro_part = str(now.microsecond)
+
+    return f"{sanitized}_{label_clean}_{timestamp_part}_{micro_part}"
+
 
 def extract_segment(
     video_path_input: str,
     start,
     end,
+    video_name_input: str,
     label: str,
-    notes: str
+    notes: str,
 ):
     """
-    Cut audio + video segment from source file using ffmpeg.
-    Returns: (status_msg, audio_path, video_path)
+    Records annotation metadata in Supabase.
+    
+    NO file extraction happens here.
+    NO local files are written.
+    NO CSV is written.
+    
+    ffmpeg extraction happens on demand when user requests
+    preview or download in the browser.
+    
+    Returns:
+        (annotation_dict: dict | None, error: str | None)
     """
-    try:
-        # ── 1. Resolve input path ─────────────────────────────
-        path_str = (video_path_input or "").strip()
-        print(f"[extract] raw path   : {path_str!r}")
+    from controllers.supabase_sync import (
+        insert_annotation,
+        annotation_object_to_supabase_dict,
+    )
+    from datetime import datetime
+    import logging
+    
+    _logger = logging.getLogger('natak.extractor')
+    
+    # Validate video_name — mandatory, hardened
+    if video_name_input is None:
+        video_name = ''
+    elif not isinstance(video_name_input, str):
+        _logger.warning(
+            f"extract_segment: video_name non-string: "
+            f"type={type(video_name_input)}, val={repr(video_name_input)[:80]}"
+        )
+        video_name = ''
+    else:
+        video_name = video_name_input.strip()
+    
+    _INVALID_NAMES = {
+        '', '[object object]', 'undefined', 'null', 'none', '{}', '[]'
+    }
+    if video_name.lower() in _INVALID_NAMES:
+        video_name = ''
 
-        # If Gradio passed a temp copy (UUID-prefixed), resolve back to source
+    if not video_name:
+        return None, (
+            "Video Name is required. "
+            "Enter a short name for the source video before extracting."
+        )
+    
+    # Validate source_video (video_path_input)
+    source_video = video_path_input
+    if not source_video or not str(source_video).strip():
+        return None, "Source video is required."
+    
+    # If Gradio passed a temp copy (UUID-prefixed), resolve back to source
+    path_str = str(source_video).strip()
+    source_is_url = _is_url(path_str)
+
+    if not source_is_url:
         tmp_str = str(TEMP_VIDEO_DIR)
         if path_str.startswith(tmp_str):
             tmp_name   = Path(path_str).name
@@ -102,141 +238,50 @@ def extract_segment(
             )
             if candidates:
                 path_str = str(candidates[0])
-                print(f"[extract] resolved   : {path_str!r}")
-            else:
-                # temp path still exists — use it, just sanitize stem later
-                print(f"[extract] using temp as-is: {path_str!r}")
-
-        if not path_str:
-            return "❌ No video path entered", None, None
-
-        video_file = Path(path_str)
-        if not video_file.exists():
-            return f"❌ File not found: {path_str}", None, None
-
-        print(f"[extract] video      : {video_file.name}")
-
-        # ── 2. Validate timestamps ────────────────────────────
-        try:
-            start_f = float(start) if start is not None else 0.0
-            end_f   = float(end)   if end   is not None else 0.0
-        except (TypeError, ValueError) as e:
-            return f"❌ Invalid timestamps: {e}", None, None
-
-        print(f"[extract] range      : {start_f}s → {end_f}s")
-
-        if start_f < 0:
-            return "❌ Start time cannot be negative", None, None
-        if start_f >= end_f:
-            return f"❌ Start ({start_f}s) must be before end ({end_f}s)", None, None
-        if (end_f - start_f) < 0.5:
-            return "❌ Segment too short — minimum 0.5 seconds", None, None
-        if not label or label not in LABELS:
-            return f"❌ Invalid label: '{label}'", None, None
-
-        # ── 3. Build clean output paths ───────────────────────
-        duration   = end_f - start_f
-        ts         = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        clean_stem = _sanitize_stem(video_file.stem)
-        output_id  = f"{clean_stem}_{label}_{ts}"
-
-        print(f"[extract] clean_stem : {clean_stem!r}")
-        print(f"[extract] output_id  : {output_id!r}")
-
-        audio_out = OUTPUT_DIR / label / "audio" / f"{output_id}.wav"
-        video_out = OUTPUT_DIR / label / "video" / f"{output_id}.mp4"
-
-        print(f"[extract] audio_out  : {audio_out}")
-        print(f"[extract] video_out  : {video_out}")
-
-        # ── 4. Ensure output dirs exist and are writable ──────
-        audio_out.parent.mkdir(parents=True, exist_ok=True)
-        video_out.parent.mkdir(parents=True, exist_ok=True)
-
-        for d in [audio_out.parent, video_out.parent]:
-            probe = d / ".write_test"
-            try:
-                probe.write_text("ok")
-                probe.unlink()
-            except Exception as e:
-                return f"❌ Output dir not writable: {d}\n{e}", None, None
-
-        time.sleep(0.01)
-
-        # ── 5. Extract audio ──────────────────────────────────
-        r_audio = subprocess.run(
-            ["ffmpeg", "-nostdin", "-y",
-             "-ss", str(start_f), "-t", str(duration),
-             "-i", str(video_file),
-             "-vn", "-acodec", "pcm_s16le",
-             "-ar", "16000", "-ac", "1",
-             str(audio_out)],
-            capture_output=True, text=True, timeout=60
-        )
-
-        if r_audio.returncode != 0:
-            err = r_audio.stderr[-400:].strip()
-            print(f"[extract] audio FAIL:\n{err}")
-            return f"❌ Audio extraction failed:\n{err}", None, None
-
-        if not audio_out.exists() or audio_out.stat().st_size == 0:
-            return "❌ Audio file empty after extraction", None, None
-
-        audio_size = audio_out.stat().st_size
-        print(f"[extract] audio OK   : {audio_size/1024:.1f} KB")
-
-        # ── 6. Extract video ──────────────────────────────────
-        r_video = subprocess.run(
-            ["ffmpeg", "-nostdin", "-y",
-             "-ss", str(start_f), "-t", str(duration),
-             "-i", str(video_file),
-             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-             "-c:a", "aac", "-movflags", "+faststart",
-             str(video_out)],
-            capture_output=True, text=True, timeout=120
-        )
-
-        if r_video.returncode != 0:
-            err = r_video.stderr[-400:].strip()
-            print(f"[extract] video FAIL:\n{err}")
-            return f"⚠️ Video failed (audio saved):\n{err}", str(audio_out), None
-
-        if not video_out.exists() or video_out.stat().st_size == 0:
-            return "⚠️ Video file empty (audio saved)", str(audio_out), None
-
-        video_size = video_out.stat().st_size
-        print(f"[extract] video OK   : {video_size/(1024*1024):.1f} MB")
-
-        # ── 7. Save to CSV ────────────────────────────────────
-        df = save_row({
-            "id"          : output_id,
-            "source_video": video_file.name,
-            "start_time"  : start_f,
-            "end_time"    : end_f,
-            "duration"    : duration,
-            "label"       : label,
-            "notes"       : notes or "",
-            "audio_file"  : str(audio_out.relative_to(OUTPUT_DIR)),
-            "video_file"  : str(video_out.relative_to(OUTPUT_DIR)),
-            "timestamp"   : datetime.now().isoformat()
-        })
-        print(f"[extract] CSV total  : {len(df)}")
-
-        msg = (
-            f"✅ **{label}** | {duration:.1f}s | "
-            f"`{output_id[-40:]}`\n\n"
-            f"🎵 {audio_size/1024:.1f} KB  |  "
-            f"🎬 {video_size/(1024*1024):.1f} MB  |  "
-            f"Total: {len(df)} clips"
-        )
-        return msg, str(audio_out), str(video_out)
-
-    except subprocess.TimeoutExpired:
-        return "❌ ffmpeg timed out — video may be too large", None, None
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return f"❌ {type(e).__name__}: {e}", None, None
+            source_video = path_str
+    
+    # Validate timing
+    try:
+        start_f = float(start)
+        end_f   = float(end)
+    except (ValueError, TypeError):
+        return None, "Start time and end time must be valid numbers."
+    
+    if end_f <= start_f:
+        return None, "End time must be greater than start time."
+    
+    duration = round(end_f - start_f, 3)
+    
+    # Validate label
+    if not label or not str(label).strip():
+        return None, "Emotion label is required."
+    
+    # Generate annotation ID
+    annotation_id = _generate_annotation_id(video_name, str(label))
+    
+    # Build metadata dict
+    annotation_dict = {
+        'id':           annotation_id,
+        'source_video': str(source_video).strip(),
+        'start_time':   start_f,
+        'end_time':     end_f,
+        'duration':     duration,
+        'label':        str(label).strip(),
+        'notes':        str(notes).strip() if notes else '',
+        'audio_file':   '',   # extracted on demand — not stored
+        'video_file':   '',   # extracted on demand — not stored
+        'timestamp':    datetime.now().isoformat(),
+    }
+    
+    # Insert into Supabase
+    supabase_dict = annotation_object_to_supabase_dict(annotation_dict)
+    success, error = insert_annotation(supabase_dict)
+    
+    if not success:
+        return None, f"Supabase insert failed: {error}"
+    
+    _logger.info(f"Annotation recorded: {annotation_id}")
+    return annotation_dict, None
 
 
 # ── Preview cache ──────────────────────────────────────────────
@@ -280,6 +325,22 @@ def scan_videos() -> list[str]:
     if not VIDEO_DIR.exists():
         return []
     return sorted(str(p) for p in VIDEO_DIR.glob("*.mp4"))
+
+
+def scan_folder(folder_path: str) -> list[str]:
+    """
+    Scan a local directory (non-recursively) for video files.
+    Returns a sorted list of filenames (not full paths).
+    """
+    VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv'}
+    folder = Path(folder_path)
+    if not folder.exists() or not folder.is_dir():
+        return []
+    files = sorted(
+        f.name for f in folder.iterdir()
+        if f.is_file() and f.suffix.lower() in VIDEO_EXTS
+    )
+    return files
 
 
 def format_time(seconds) -> str:

@@ -1,369 +1,597 @@
-# 🎬 Video Annotator
+# 🎭 Natak Annotation Tool
 
-A Gradio‑based application for annotating video segments with Rasa emotion labels.
-The tool lets you **download videos from any URL** (YouTube, Vimeo, direct `.mp4`, etc.), load a local file, set start/end timestamps, choose a label, and automatically extract the corresponding audio and video clips. All extracts are saved under a structured `annotations/` directory for easy downstream use.
-
-The UI is split into two tabs — **📥 Download Video** for fetching remote videos via `yt-dlp`, and **🎬 Annotate** for the annotation workflow itself.
-
----
-
-## 📋 Table of Contents
-1. [Prerequisites](#prerequisites)
-2. [Installation](#installation)
-3. [One-Shot Installer](#one-shot-installer)
-4. [Configuration](#configuration)
-5. [Running the App](#running-the-app)
-6. [Environment Variables](#environment-variables)
-7. [User Interface Overview](#ui-overview)
-8. [Keyboard Shortcuts](#keyboard-shortcuts)
-9. [Output Structure](#output-structure)
-10. [Stopping the Server](#stopping-the-server)
-11. [FAQ / Troubleshooting](#faq--troubleshooting)
-12. [Contributing & Development](#contributing--development)
+A browser-based tool for annotating Rasa (emotional) segments in
+Gujarati theatrical video recordings. Built with Gradio and FastAPI,
+backed by Supabase for cloud-native annotation storage.
 
 ---
 
-## Prerequisites
+## Table of Contents
 
-| Requirement | Minimum version / details |
-|------------|---------------------------|
-| **Python** | 3.10 or newer (tested on 3.10‑3.12) |
-| **ffmpeg** | 4.4+ (must be reachable via `PATH`) |
-| **yt-dlp** | 2024.1.0+ (CLI on `PATH` or importable) |
-| **Git**   | Optional, for cloning the repo |
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Features](#features)
+- [Technology Stack](#technology-stack)
+- [Supabase Setup](#supabase-setup)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Running the Application](#running-the-application)
+- [Usage Guide](#usage-guide)
+- [Segment ID Format](#segment-id-format)
+- [On-Demand Media Extraction](#on-demand-media-extraction)
+- [Spectral Analysis](#spectral-analysis)
+- [Project Structure](#project-structure)
+- [Changelog](#changelog)
 
-> **Note:** On most Linux/macOS systems `ffmpeg` and `yt-dlp` can be installed via the package manager (`apt`, `brew`, `pip`, etc.). On Windows download a static build and add its folder to the `PATH`. The [one-shot installer](#one-shot-installer) below handles all of this automatically.
+---
+
+## Overview
+
+The Natak Annotation Tool enables researchers to:
+
+1. **Annotate** — Watch a source video, identify a segment by
+   start/end timestamps, label it with a Rasa category, and save
+   the annotation to Supabase with a single click.
+
+2. **Browse** — View all saved annotations in an interactive
+   table, filterable by Rasa category. Every annotation shows its
+   label, timing, source, and date.
+
+3. **Preview** — Click any annotation to open a detail panel.
+   Load audio or video previews on demand — ffmpeg extracts the
+   segment from the source video in real time and streams it to
+   the browser. No files are stored permanently.
+
+4. **Analyse** — Run a full normalized spectral analysis on any
+   segment. The tool extracts audio on demand, computes the
+   normalized spectrum with 95% confidence interval, and displays
+   a three-panel plot inline.
+
+5. **Download** — Download individual segments (audio or video)
+   or batch-download all segments for a Rasa as a zip file.
+   Everything is extracted on demand from source videos.
+
+---
+
+## Architecture
+
+### Cloud-Native, Zero Local Storage
+
+All annotation data is stored in **Supabase** (PostgreSQL).
+Audio and video files are **never stored permanently** — neither
+locally nor in any cloud bucket.
+
+When a user requests a preview or download, the server:
+
+1. Fetches annotation metadata from Supabase (source URL,
+   start time, end time)
+2. Runs ffmpeg on demand to extract the segment
+3. Streams the bytes directly to the browser
+4. Deletes the temp file immediately
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Browser (User)                       │
+│                                                          │
+│  Annotation Tab    Segments Tab    Download Tab          │
+└──────────┬──────────────┬──────────────┬────────────────┘
+           │              │              │
+           ▼              ▼              ▼
+┌─────────────────────────────────────────────────────────┐
+│              FastAPI + Gradio Server                     │
+│                                                          │
+│  /segment/audio/{id}     — on-demand audio stream       │
+│  /segment/video/{id}     — on-demand video stream       │
+│  /segment/download/audio/{id}  — audio attachment       │
+│  /segment/download/video/{id}  — video attachment       │
+│                                                          │
+│  controllers/                                            │
+│    extractor.py          — metadata only, no files      │
+│    media_extractor.py    — ffmpeg on-demand extraction  │
+│    spectrogram_analysis.py — normalized spectrum        │
+│    supabase_sync.py      — all Supabase operations      │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                     Supabase                             │
+│                                                          │
+│  Table: annotations                                      │
+│    id TEXT PRIMARY KEY                                   │
+│    source_video TEXT                                     │
+│    start_time NUMERIC                                    │
+│    end_time NUMERIC                                      │
+│    duration NUMERIC                                      │
+│    label TEXT                                            │
+│    notes TEXT                                            │
+│    audio_file TEXT  (reserved, empty)                   │
+│    video_file TEXT  (reserved, empty)                   │
+│    timestamp TEXT                                        │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Source Video Accessibility
+
+When a segment is previewed or downloaded, the server must be
+able to access the **original source video**. This means:
+
+- **HTTP/HTTPS URLs** — accessible from any machine running
+  the app, as long as the URL is public
+- **Local file paths** — only accessible if the file exists on
+  the server machine running the app
+
+---
+
+## Features
+
+### Annotation Tab
+- Load source video via public URL or local file path
+- Browse local video files from a configured folder
+- Video player with keyboard shortcuts for timestamp capture
+- One-click timestamp extraction (start / end)
+- Rasa label selector with all categories
+- **Video Name field** (required) — becomes part of the
+  segment ID
+- Notes field for free-text annotation
+- Save to Supabase with a single click
+
+### Extracted Segments Tab
+- Summary stats strip — total count and per-Rasa pill cards
+- Filter sidebar — view all or filter by Rasa
+- Interactive table — click any row to open detail panel
+- Detail panel:
+  - Segment identity card (label, timing, source, ID)
+  - On-demand video preview
+  - On-demand audio preview with waveform display
+  - Normalized spectral analysis (three-panel plot)
+  - Delete with confirmation popup
+
+### Download Tab
+- Download individual segments (audio or video) on demand
+- Batch download all segments for a Rasa as a zip file
+- Everything extracted from source videos at request time
+
+---
+
+## Technology Stack
+
+| Component | Technology |
+|---|---|
+| UI Framework | Gradio 4.x |
+| Server | FastAPI + Uvicorn |
+| Database | Supabase (PostgreSQL) |
+| Media Extraction | ffmpeg (subprocess) |
+| Audio Analysis | librosa, numpy, scipy |
+| Visualization | matplotlib |
+| Python | 3.10+ |
+
+---
+
+## Supabase Setup
+
+### Step 1 — Create the Table
+
+Run this SQL in your Supabase SQL editor:
+
+```sql
+create table annotations (
+    id           text primary key,
+    source_video text,
+    start_time   numeric,
+    end_time     numeric,
+    duration     numeric,
+    label        text,
+    notes        text,
+    audio_file   text default '',
+    video_file   text default '',
+    timestamp    text
+);
+
+-- Optional: index for faster filtering by label
+create index idx_annotations_label
+    on annotations (label);
+
+-- Optional: index for timestamp ordering
+create index idx_annotations_timestamp
+    on annotations (timestamp desc);
+```
+
+### Step 2 — Get Your Credentials
+
+In your Supabase project:
+1. Go to **Settings → API**
+2. Copy your **Project URL** → `SUPABASE_URL`
+3. Copy your **anon public key** → `SUPABASE_KEY`
+
+### Step 3 — Configure Environment
+
+```bash
+cp .env.example .env
+# Edit .env with your Supabase URL and key
+```
+
+> **Important**: The `id` column is `TEXT` (not UUID).
+> The Python backend generates IDs in this format:
+>
+> ```
+> {video_name}_{label}_{YYYYMMDD}_{HHMMSS}_{microseconds}
+> ```
+>
+> Example: `lalyo_laptayo_Hasya_20260718_143022_847291`
+
+> **Note**: `audio_file` and `video_file` columns are reserved
+> and stored as empty strings. Segments are extracted on demand
+> from `source_video` — nothing is stored in these columns.
 
 ---
 
 ## Installation
 
-### 1. Clone the repository
+### Prerequisites
+
+- Python 3.10+
+- ffmpeg installed and in PATH
+- Supabase account and project
+
+### Install ffmpeg
 
 ```bash
-git clone https://github.com/your-org/gujarati-natak.git
-cd gujarati-natak
+# macOS
+brew install ffmpeg
+
+# Ubuntu / Debian
+sudo apt update && sudo apt install ffmpeg
+
+# Windows
+# Download from https://ffmpeg.org/download.html
+# Add to PATH
 ```
 
-> If you just need the code, you can also copy the folder locally; no Git required.
-
-### 2. Install Python dependencies
+### Install Python Dependencies
 
 ```bash
-python -m pip install --upgrade pip          # recommended
+git clone <repository-url>
+cd natak-annotation-tool
+
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
-
-`requirements.txt` pulls in:
-* `gradio>=4.0`
-* `pandas>=1.5`
-* `yt-dlp>=2024.1.0`
-
----
-
-## One-Shot Installer
-
-For a fresh machine (or to repair a broken setup), `install.sh` handles everything automatically — Python ≥ 3.10, pip, ffmpeg, tmux, the Python packages from `requirements.txt`, and initial creation of the output directories:
-
-```bash
-bash install.sh
-```
-
-Supported on Ubuntu / Debian / macOS (with Homebrew). After it finishes, launch with `bash run.sh` and open <http://localhost:PORT>.
-
-The installer is idempotent — safe to re-run if something is missing.
 
 ---
 
 ## Configuration
 
-The application uses a single `config/settings.py` to read environment variables and defaults.
-All source videos and downloaded videos live in `dataset/` (set via `VIDEO_DIR` / `DATASET_DIR`).
-Extracted clips and the CSV log live in `annotations/`.
+Copy `.env.example` to `.env` and configure:
 
-You can override any value in three ways:
+```bash
+# Required
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-anon-key
+SUPABASE_TABLE=annotations
 
-| Method | Example |
-|--------|---------|
-| **Shell export** | `export PORT=8080` |
-| **Command‑line argument** (to `run.sh`) | `bash run.sh /path/to/videos` |
-| **Environment variable** | `PORT=8080 bash run.sh` |
-
-### Labels
-
-The supported Rasa emotion labels are defined in `config/settings.py` → `LABELS`:
-
+# Optional
+APP_HOST=0.0.0.0
+APP_PORT=7860
+APP_SHARE=false
+APP_TITLE=Natak Annotation Tool
 ```
-["Shant", "Hasya", "Bhayanak", "Karuna", "Rudra"]
-```
-
-One sub‑folder per label is created under `annotations/` automatically on startup.
 
 ---
 
-## Running the App
-
-### Quick start (Linux / macOS)
+## Running the Application
 
 ```bash
-# Start with default dataset/ folder and default port
-bash run.sh
+# Activate virtual environment
+source venv/bin/activate
 
-# Use a custom video directory (saved into VIDEO_DIR)
-bash run.sh /path/to/your/videos
-
-# Change the listening port (e.g., 8080)
-PORT=8080 bash run.sh
-
-# Run in foreground without tmux (logs visible directly)
-NO_TMUX=1 bash run.sh
-```
-
-### Direct launch (any OS)
-
-```bash
+# Start the server
 python app.py
 ```
 
-> This starts the UI directly without the tmux session handling that `run.sh` provides.
-
-### Windows
-
-```cmd
-pip install -r requirements.txt
-python app.py
-```
-
-> The `run.sh` script is a *cross‑platform* wrapper; on Windows you can execute the same commands inside Git‑Bash or WSL.
-
-### First launch
-
-On startup `app.py` checks for `gradio`, `pandas`, and `yt-dlp`, auto-installs any missing Python package (then re‑executes), verifies `ffmpeg` is on `PRINT`, and warns if the `yt-dlp` CLI is absent.
-
-After the server starts you'll see:
-
-```
-==================================================
-🎬 VIDEO ANNOTATOR
-==================================================
-🌐 http://localhost:7860
-==================================================
-```
-
-Open that URL in your browser.
+The app will be available at `http://localhost:7860`.
 
 ---
 
-## Environment Variables (expanded)
+## Usage Guide
 
-You can view the full list of configurable variables in **`config/settings.py`**. Below is a concise reference:
+### Creating an Annotation
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `7860` | Port number for the Gradio server. |
-| `HOST` | `0.0.0.0` | IP address to bind. Use `127.0.0.1` for localhost‑only access. |
-| `VIDEO_DIR` | `dataset/` | Base directory where your video files reside. Videos downloaded via the **📥 Download Video** tab are saved here. |
-| `DATASET_DIR` | `dataset/` | Alias of `VIDEO_DIR`; the canonical source folder. |
-| `OUTPUT_DIR` | `annotations/` | Root folder for all extracted clips & CSV logs. |
-| `ANNOTATION_DIR` | `annotations` | Legacy alias of `OUTPUT_DIR`. |
-| `LOG_LEVEL` *(optional)* | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
-| `MAX_WORKERS` *(optional)* | `4` | Number of parallel extraction workers (useful on multi‑core machines). |
+1. Open the **Annotation Tab**
+2. Enter a source video URL or select a local file
+3. Play the video and identify the segment
+4. Click timestamps to capture start and end times
+5. Enter a **Video Name** (required — e.g. `lalyo_laptayo`)
+6. Select the **Rasa** label
+7. Add optional notes
+8. Click **Extract Segment**
 
-You can export any of these before running `run.sh`:
+The annotation metadata is saved to Supabase immediately.
+No audio or video files are created at this point.
 
-```bash
-export PORT=9000
-export HOST=127.0.0.1
-export LOG_LEVEL=DEBUG
-```
+### Browsing and Previewing Segments
 
-The `run.sh` launcher also accepts `NO_TMUX=1` (run in foreground) and an optional first positional argument (custom video folder).
+1. Open the **Extracted Segments Tab**
+2. Click **Refresh** to load annotations from Supabase
+3. Use the filter sidebar to view All or filter by Rasa
+4. Click any row to open the detail panel
+5. Click **Load Video Preview** or **Load Audio Preview**
+   to extract and stream the segment on demand
+6. Click **Analyse Spectrum** for spectral analysis
 
----
+### Downloading Segments
 
-## UI Overview
+Individual segments can be downloaded from the detail panel
+via the download links (extracted on demand).
 
-The app has **two tabs** at the top. Tabs share the same backend; downloaded videos appear in the Annotate tab immediately.
-
-### Tab 1 — 📥 Download Video
-
-| Element | Purpose |
-|---------|---------|
-| **🔗 Video URL** textbox | Paste any YouTube, Vimeo, or direct `.mp4` URL. |
-| **⬇️ Download** button | Runs `yt-dlp`, streams progress into the log box below. |
-| **📋 Download Log** box | Scrolling monospace log showing yt-dlp's live progress. |
-| **Status markdown** | Shows `✅ Downloaded: <path>` on success, `❌ Error: …` on failure. |
-| **🎬 Go to Annotate Tab →** button | (Appears after download) switches to the Annotate tab and auto‑loads the new video. |
-
-Tips (shown under the tab):
-* Paste any YouTube, Vimeo, or direct `.mp4` URL.
-* `yt-dlp` automatically picks the best quality and merges into MP4.
-* After download, the video is auto‑loaded in the **Annotate** tab and added to the "Available Videos" list.
-
-Behind the scenes: videos are saved directly into `dataset/` — the same folder the **Annotate** tab scans — so no manual move is needed.
-
-### Tab 2 — 🎬 Annotate
-
-| Element | Purpose |
-|---------|---------|
-| **📁 Video Path** textbox | Paste relative/absolute path to a `.mp4` file. Press **Enter** or click **📂 Load Video**. |
-| **Available Videos** accordion | Lists every `.mp4` found in `dataset/` (collapsible, auto‑refreshed after download). |
-| **Video Player** | Main player (height 400). |
-| **Start / End number inputs** | `A` sets start, `D` sets end via keyboard shortcuts; updated live. |
-| **Duration** textbox | Read‑only — e.g. `10.0s (00:00 → 00:10)`. |
-| **🏷️ Rasa Label** radio | Pick one of `Shant`, `Hasya`, `Bhayanak`, `Karuna`, `Rudra`. |
-| **Notes** textbox | Free‑form notes attached to the segment on extraction. |
-| **✂️ EXTRACT (E)** button | Cuts the segment and saves audio + video into `annotations/<label>/`. |
-| **Stats markdown** | Live counter — total clips, total seconds, per‑label breakdown. |
-| **📋 All Segments** radio | Newly extracted items appear at the top (newest first). Clicking one populates the **Preview** column. |
-| **🔄 Refresh** button | Re‑scans `annotations.csv` and rebuilds the segment list. |
-| **🗑️ Delete Selected** button | Opens a **⚠️ Confirm Deletion** panel before removing audio + video from disk and dropping the row from the CSV. |
-| **Yes, Delete Permanently** / ❌ Cancel | Confirmation buttons (hidden until delete is first clicked). |
-| **👁️ Preview** column | Shows label, source, time range, ID, plus an audio player and a video preview for the selected segment. |
-
-All actions are captured in the console logs and visualized through Gradio's live update mechanism. The segment list is sorted newest-first; the unique `id` field is the stable delete key (so multi-select race conditions can't delete the wrong segment).
+For batch downloads, use the **Download Tab** to download
+all segments for a Rasa as a zip file.
 
 ---
 
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| **Space** | Play / Pause |
-| **A** | Set *start* time (cursor jumps to selected point) |
-| **D** | Set *end* time |
-| **E** | Extract current segment (uses the label you selected) |
-| **← / →** | Seek backward / forward by **5 seconds** |
-| **Shift+← / Shift+→** | Seek backward / forward by **1 second** |
-| **Ctrl+R** | Reload UI (useful after changing environment variables) |
-| **Enter** (in Video Path box) | Same as clicking **📂 Load Video** |
-
-Shortcuts fire only when no text input has focus (so typing a URL or notes won't accidentally seek the player). The **A / D / E** keys use the **main player** (the larger video in the Annotate tab), not the preview.
-
-These shortcuts work regardless of whether the UI has focus; Gradio forwards global key events to the underlying components.
-
----
-
-## Output Structure
+## Segment ID Format
 
 ```
-project_root/
+{video_name}_{label}_{YYYYMMDD}_{HHMMSS}_{microseconds}
+```
+
+Examples:
+```
+lalyo_laptayo_Hasya_20260718_143022_847291
+v1_Shant_20260719_091534_203847
+natak2_Rudra_20260720_154201_394821
+```
+
+Rules:
+- `video_name` — provided by user, spaces → underscores,
+  special characters removed
+- `label` — Rasa category name
+- Timestamp — local server time at annotation creation
+- Microseconds — ensures uniqueness within the same second
+
+---
+
+## On-Demand Media Extraction
+
+When a user requests a preview or download:
+
+```
+User clicks "Load Audio Preview"
+    → handler calls extract_audio_to_tempfile()
+    → ffmpeg reads source_video (URL or local path)
+    → ffmpeg writes WAV to NamedTemporaryFile
+    → Gradio serves the temp file to the browser player
+    → Waveform is displayed in the audio player
+
+User clicks download link
+    → FastAPI route /segment/download/audio/{id}
+    → fetch_annotation_by_id() from Supabase
+    → extract_audio_bytes() via ffmpeg
+    → StreamingResponse with WAV bytes
+    → Browser triggers file download dialog
+
+User requests zip download
+    → For each segment in the Rasa:
+        → extract_audio_bytes() + extract_video_bytes()
+        → Add to in-memory zip
+    → Write zip to temp file
+    → Serve as gr.File download
+```
+
+ffmpeg must be installed and accessible from PATH on the
+server running the application.
+
+---
+
+## Spectral Analysis
+
+The spectral analysis module (`controllers/spectrogram_analysis.py`)
+implements a normalized spectrum analysis pipeline:
+
+1. **Extract** — Audio extracted from source video via ffmpeg
+2. **Segment** — Up to 40 non-silent 0.1s segments sampled
+3. **FFT** — Normalized spectrum computed per segment:
+   - Fn = F / Fm (normalized frequency ratio)
+   - An = A / Am (normalized amplitude)
+4. **Aggregate** — Mean spectrum + 95% CI computed across
+   all valid segments
+5. **Plot** — Three-panel figure:
+   - Panel A: Full audio waveform
+   - Panel B: Mean normalized spectrum (Fn 1–8) with 95% CI
+   - Panel C: Zoomed octave range (Fn 1–2)
+
+The analysis is based on acoustic research methodology for
+Rasa classification in Gujarati theatrical speech.
+
+---
+
+## Project Structure
+
+```
+natak-annotation-tool/
 │
-├─ dataset/                   ← source & downloaded videos
-│   ├─ v1.mp4
-│   └─ <downloaded_title>.mp4
+├── app.py                      # FastAPI + Gradio entry point
+│                               # On-demand streaming routes
 │
-├─ annotations/
-│   ├─ Shant/
-│   │   ├─ audio/        ← .wav clips (one per segment)
-│   │   └─ video/        ← .mp4 clips (one per segment)
-│   ├─ Hasya/
-│   │   ├─ audio/
-│   │   └─ video/
-│   ├─ Bhayanak/
-│   ├─ Karuna/
-│   ├─ Rudra/
-│   └─ annotations.csv        ← CSV log with columns:
-│       id, source_video, start_time, end_time,
-│       duration, label, notes,
-│       audio_file, video_file, timestamp
+├── config/
+│   └── settings.py             # All configuration settings
 │
-└─ /tmp/video_annotator*      ← temp copies for clean Gradio serving & preview cache
-```
-
-* The **`id`** column holds a unique identifier for each segment, automatically generated (see the *Naming convention* section below).
-* The **CSV** is continuously updated; you can open it with any spreadsheet tool or load it into pandas for further analysis.
-* Audio is extracted as 16-bit PCM WAV, 16 kHz, mono. Video is re‑encoded as H.264 + AAC with faststart for browser-friendly streaming.
-
-### Naming convention for `id`
-
-```
-<clean_stem>_<label>_<YYYYMMDD_HHMMSS_ffffff>
-```
-
-* `<clean_stem>` — sanitized source video filename (UUID prefix from Gradio is stripped; illegal filesystem characters are replaced with `_`; truncated to 60 chars).
-* `<label>` — the emotion label (e.g., `Shant`).
-* `<YYYYMMDD_HHMMSS_ffffff>` — local timestamp at extraction time, including microseconds for uniqueness.
-
----
-
-## Stopping the Server
-
-When you launched the app via `run.sh`, it runs inside a **tmux** session named `annotator`. To stop it cleanly:
-
-```bash
-tmux kill-session -t annotator
-```
-
-If you started the app manually (e.g., `python app.py` or `NO_TMUX=1 bash run.sh`), simply press `Ctrl+C` in the terminal where it is running.
-
-To inspect logs after the fact:
-
-```bash
-tail -40 ~/annotator.log
+├── controllers/
+│   ├── extractor.py            # Annotation metadata creation
+│   │                           # Supabase insert — no file writes
+│   ├── media_extractor.py      # On-demand ffmpeg extraction
+│   │                           # Audio/video bytes for streaming
+│   ├── spectrogram_analysis.py # Normalized spectrum analysis
+│   │                           # librosa + matplotlib pipeline
+│   └── supabase_sync.py        # All Supabase operations
+│                               # fetch, insert, delete
+│
+├── models/
+│   └── annotation.py           # Annotation data model
+│
+├── views/
+│   ├── ui.py                   # Gradio UI layout — all tabs
+│   └── handlers.py             # All Gradio event handlers
+│
+├── .env.example                # Environment variable template
+├── .gitignore                  # Git ignore rules
+├── requirements.txt            # Python dependencies
+└── README.md                   # This file
 ```
 
 ---
 
-## FAQ / Troubleshooting
+## Changelog
 
-| Problem | Solution |
-|---------|----------|
-| **`ffmpeg: command not found`** | Install ffmpeg and make sure it is on your `PATH`. On Ubuntu: `sudo apt-get install ffmpeg`. On macOS: `brew install ffmpeg`. |
-| **`yt-dlp: command not found`** | Install with `pip install yt-dlp` (or `brew install yt-dlp` on macOS). The app auto-installs the Python package if missing, but the CLI is also required for the Download tab. |
-| **Port already in use** | Change the `PORT` environment variable (`PORT=8081 bash run.sh`). `run.sh` also auto-kills anything already on the chosen port before launching. |
-| **No videos are detected** | Verify that your videos are placed under `dataset/` (or set `VIDEO_DIR` explicitly before launching). The **📥 Download Video** tab saves directly into `dataset/`. |
-| **Extraction fails on a specific video** | Check that the file is a valid `.mp4` and not corrupted. You can also run `python -c "import subprocess, sys; subprocess.run(['ffmpeg','-i', 'path/to/file.mp4'], check=True)"` to verify ffmpeg can read it. |
-| **CSV not updating** | Ensure the process has write permissions to the `annotations/` directory. If you ran the app inside a restricted environment (e.g., Docker without volume mounts), mount a writable host path. |
-| **Want faster extraction on many videos** | Increase `MAX_WORKERS` (default 4) by setting it in the environment before launching: `export MAX_WORKERS=8`. The extractor will then spawn a pool of worker processes. |
-| **Downloaded video doesn't appear in Annotate tab** | Click the **🎬 Go to Annotate Tab →** button that appears after a successful download — it auto-populates the path and refreshes the "Available Videos" list. |
-| **Segment delete removes the wrong clip** | Deletion is keyed by the unique `id` field (not positional index), so it cannot delete the wrong segment even if the list re-sorts between selection and confirmation. |
-| **Preview video stutters / won't seek** | The app re-muxes the clip with `-movflags +faststart` on first preview and caches the result in `/tmp/video_annotator_preview/`. If the cache is stale, restart the app to clear it. |
-| **`install.sh` fails on Python check** | Ensure Python 3.10+ is installed (`python3 --version`). The installer will try to install it via `apt` / `brew` if missing. |
-| **Want to run without tmux** | Use `NO_TMUX=1 bash run.sh` — the server runs in the foreground and `Ctrl+C` stops it. |
+### [2.1] — Spectrogram Analysis Module
 
----
-
-## Contributing & Development
-
-1. **Fork** the repository and clone your copy.
-2. Create a **feature branch** (`git checkout -b feat/your-feature`).
-3. Write **unit tests** for any new functions (use `pytest`).
-4. Run the **test suite**: `pytest -q`.
-5. Submit a **Pull Request** with a clear description of the change.
-
-### Coding conventions
-
-* Follow **PEP 8** for Python style.
-* Use **type hints** (`-> None`, `Dict[str, Any]`, etc.) throughout.
-* Keep all UI strings in `constants.py` to avoid duplication.
-* Log important events with the standard library `logging` module at `INFO` level; switch to `DEBUG` for local troubleshooting.
-
-### Architecture
-
-The project follows a layered MVC-style layout:
-
-```
-app.py                  ← entry point; checks deps, launches UI
-run.sh                  ← launcher (tmux, port sanity, foreground mode)
-install.sh              ← one-shot installer for fresh machines
-config/settings.py      ← central config, paths, labels, env vars
-controllers/
-  downloader.py         ← yt-dlp video download (yt-dlp CLI wrapper)
-  extractor.py          ← ffmpeg extraction, preview cache, video scan
-models/
-  annotation.py         ← CSV read/write, segment list, stats, delete-by-id
-views/
-  ui.py                 ← Gradio layout, two tabs, CSS, JS shortcuts
-  handlers.py           ← event wiring (no business logic)
-```
-
-Business logic stays out of `views/` — handlers only translate UI events into controller calls and format results back into Gradio updates.
+**Added**
+- `controllers/spectrogram_analysis.py` with full pipeline:
+  - `_ext_seg` — non-silent segment extraction
+  - `_norm_spect` — FFT normalized spectrum computation
+  - `_compute_mean_spectrum` — mean + stack over segments
+  - `analyse_segment_spectrogram` — main entry point
+- `handle_analyse_spectrum` in `views/handlers.py`
+- `analyse_spectrum_btn` in segment detail panel
+- `spectrogram_group`, `spectrogram_image` (gr.Image)
+- `spectrogram_status_outer` for error display
+- Dark-themed three-panel matplotlib figure
+- Dependencies: `librosa>=0.10.0`, `matplotlib>=3.7.0`,
+  `scipy>=1.10.0`
 
 ---
 
-*Last updated: 2026‑06‑25*
+### [2.0] — Cloud Migration Release
+
+**Breaking Changes**
+- Removed all local file storage for extracted segments
+- Removed `annotations/annotations.csv` — all data now in Supabase
+- Removed `OUTPUT_DIR` and `ANNOTATIONS_CSV` settings
+- Annotation extraction no longer writes audio or video files to disk
+
+**Added**
+- `controllers/media_extractor.py` — on-demand ffmpeg extraction
+  for browser streaming, with no permanent file storage
+- `controllers/spectrogram_analysis.py` — full normalized spectrum
+  analysis pipeline using librosa and matplotlib
+- FastAPI streaming routes:
+  - `GET /segment/audio/{id}` — inline audio stream
+  - `GET /segment/video/{id}` — inline video stream
+  - `GET /segment/download/audio/{id}` — audio download
+  - `GET /segment/download/video/{id}` — video download
+- `fetch_annotation_by_id` in `supabase_sync.py`
+- On-demand zip download for all segments in a Rasa
+- Delete confirmation popup overlay with full segment details
+- Spectral Analysis panel in segment detail view
+- Three-panel spectrogram plot (waveform, Fn 1–8, Fn 1–2)
+- Video Name field in Annotation Tab (mandatory, part of segment ID)
+- Hardened video name validation — rejects `[object Object]`,
+  `undefined`, `null`, and empty values
+- Waveform audio player in segment detail panel
+- `.env.example` for environment configuration
+
+**Changed**
+- `controllers/extractor.py` — now records metadata only,
+  no ffmpeg at annotation time, no file writes
+- `controllers/supabase_sync.py` — confirmed column names:
+  `id`, `source_video`, `start_time`, `end_time`, `duration`,
+  `label`, `notes`, `audio_file`, `video_file`, `timestamp`
+- `annotation_object_to_supabase_dict` — uses confirmed schema,
+  `audio_file` and `video_file` stored as empty strings
+- `parse_annotations_to_segments` — reads `label` and
+  `source_video` with no aliases
+- `handle_segment_row_selected` — passes streaming URLs to
+  players instead of local file paths
+- Segment ID format: `{video_name}_{label}_{YYYYMMDD}_{HHMMSS}_{µs}`
+
+**Removed**
+- Local audio/video file extraction at annotation time
+- `annotations/annotations.csv` and `annotations/` directory
+- `OUTPUT_DIR` and `ANNOTATIONS_CSV` from settings
+- `_resolve_segment_path` — replaced by `_get_media_url`
+- "Audio Only" and "Video Only" filter modes from segments tab
+- Download buttons from segment detail panel (moved to routes)
+- Supabase Storage bucket usage — not needed, no files stored
 
 ---
 
-*If you have suggestions or find bugs, please open an issue on the GitHub repository.*
+### [1.2] — Extracted Segments Tab Overhaul
+
+**Added**
+- Full UI overhaul of the Extracted Segments Tab
+- Stats strip with total count and per-Rasa pill cards
+- Filter sidebar with view mode radio and Rasa dropdown
+- How-to-use tips panel in sidebar
+- Segment identity card with timing badges in detail panel
+- Media preview section with video (left) and audio (right)
+- Load Audio / Load Video preview buttons
+- Spectral Analysis section with explanatory description
+- Enhanced Analyse Spectrum button (primary, large, gradient)
+- Global CSS block for all button and table styles
+- Decorative section dividers in detail panel
+- Action row with Close Panel and Delete Annotation buttons
+
+**Changed**
+- `_build_segments_summary_html` — rasa color palette,
+  horizontally scrollable pills, large total count block
+- `_build_segment_detail_html` — identity card with label badge,
+  timing badges, source code block, notes block
+- `_build_segments_dataframe` — new columns:
+  `#, Rasa, Duration, Timing, Source, Annotated`
+- Segments table has larger row height and hover styling
+- Audio player uses green waveform colors (`#34d399`)
+
+**Removed**
+- Download Audio and Download Video buttons from detail panel
+- Audio Only / Video Only filter options
+
+---
+
+### [1.1] — On-Demand Streaming Architecture
+
+**Added**
+- `controllers/media_extractor.py`:
+  - `extract_audio_to_tempfile` — WAV to temp file
+  - `extract_video_to_tempfile` — MP4 to temp file
+  - `extract_audio_bytes` — WAV as bytes
+  - `extract_video_bytes` — MP4 as bytes
+  - `extract_zip_for_rasa` — batch zip creation
+- FastAPI streaming routes in `app.py`
+- `fetch_annotation_by_id` in `supabase_sync.py`
+- `handle_load_audio_preview` — loads audio via ffmpeg,
+  passes temp file path to `gr.Audio`
+- `handle_load_video_preview` — loads video via ffmpeg
+- `load_audio_btn` and `load_video_btn` in detail panel
+- `_check_source_available` — checks URL vs local path
+- `_find_segment_by_id` — segment lookup helper
+- `_build_download_links_html` — HTML anchor download links
+
+**Changed**
+- `handle_segment_row_selected` — shows metadata only on
+  row click, media loaded on separate button click
+- Gradio `gr.Audio` uses `type="filepath"` with waveform display
+- `gr.Audio` receives temp file path (not URL) for waveform
+
+---
+
+### [1.0] — Initial Release
+
+**Added**
+- Annotation Tab with video player and timestamp capture
+- URL and local folder source video modes
+- Rasa label selector
+- Segment extraction via ffmpeg to local disk
+- `annotations/annotations.csv` for local storage
+- Extracted Segments Tab with basic table
+- Supabase sync for cloud backup
+- Download Tab for local file downloads
+- `controllers/extractor.py` with full ffmpeg pipeline
+- `controllers/supabase_sync.py` for Supabase operations
+- `views/ui.py` and `views/handlers.py`
+- `config/settings.py` with `OUTPUT_DIR` and `ANNOTATIONS_CSV`
+- `models/annotation.py`
+
+---
+
+*Built for the study of Rasa in Gujarati theatrical speech.*

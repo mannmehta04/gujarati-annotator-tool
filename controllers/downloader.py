@@ -1,16 +1,24 @@
 # controllers/downloader.py
 """
-Business logic layer — video downloading.
-Uses yt-dlp to download videos from URLs (YouTube, etc.)
-directly into dataset/.
+LEGACY MODULE — Not used in current Download Tab implementation.
 
-No Gradio imports. No UI logic.
+The current download architecture uses zero-storage streaming:
+- yt-dlp Python API extracts stream URLs (no disk writes)
+- httpx streams directly from CDN to browser HTTP response
+- No files are written to server disk at any point
+
+This module's file-based download approach (writing to local filesystem)
+is retained for reference only and is not called by any active code path.
+If you need file-based downloads for a different use case, this module
+can be adapted, but it must NOT be used in the Gradio Download Tab
+as it writes files to the server's local storage.
 """
 
 import re
 import subprocess
 import shutil
 from pathlib import Path
+import tempfile
 from typing import Generator
 
 from config.settings import DATASET_DIR
@@ -64,12 +72,11 @@ def download_video(url: str) -> Generator[str, None, None]:
         yield "__RESULT__:error:yt-dlp not found. Run: pip install yt-dlp"
         return
 
-    if not DATASET_DIR.exists():
-        DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix="natak_download_"))
 
     # Output template — yt-dlp will set the final name
     # We use a temp pattern first, then detect what was saved
-    output_template = str(DATASET_DIR / "%(title).80s.%(ext)s")
+    output_template = str(temp_dir / "%(title).80s.%(ext)s")
 
     cmd = [
         "yt-dlp",
@@ -82,7 +89,7 @@ def download_video(url: str) -> Generator[str, None, None]:
     ]
 
     yield f"⬇️  Starting download: {url}\n"
-    yield f"📁 Saving to: {DATASET_DIR}\n"
+    yield f"📁 Saving to: Temporary Directory\n"
     yield "─" * 50 + "\n"
 
     saved_path = None
@@ -137,7 +144,7 @@ def download_video(url: str) -> Generator[str, None, None]:
         # If we didn't catch the path from output, scan for newest mp4
         if not saved_path or not Path(saved_path).exists():
             mp4s = sorted(
-                DATASET_DIR.glob("*.mp4"),
+                temp_dir.glob("*.mp4"),
                 key=lambda p: p.stat().st_mtime,
                 reverse=True
             )
