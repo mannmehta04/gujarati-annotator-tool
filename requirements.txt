@@ -17,3 +17,6 @@ numpy
 scipy>=1.10.0
 matplotlib>=3.7.0
 soundfile
+
+# ── Hugging Face Space Bypasses ───────────────────────────────────
+spaces
