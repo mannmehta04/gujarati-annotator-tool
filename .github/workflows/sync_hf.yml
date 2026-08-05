@@ -3,7 +3,6 @@ name: Sync to Hugging Face Hub
 on:
   push:
     branches: [main, master]
-  # Allows running this workflow manually from the Actions tab
   workflow_dispatch:
 
 jobs:
@@ -13,10 +12,35 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
-          lfs: true
           
-      - name: Push code to Hugging Face Space
+      - name: HF Push and Commit
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          # 1. Create the Hugging Face configuration block
+          cat << 'EOF' > hf_frontmatter.txt
+          ---
+          title: Natak Annotation Tool
+          emoji: 🎭
+          colorFrom: blue
+          colorTo: green
+          sdk: gradio
+          app_file: app.py
+          pinned: false
+          ---
+          
+          EOF
+          
+          # 2. Prepend it to the top of your beautiful README
+          cat hf_frontmatter.txt README.md > temp_readme.md
+          mv temp_readme.md README.md
+          rm hf_frontmatter.txt
+          
+          # 3. Create a temporary commit (this only happens in the cloud runner)
+          git config --global user.email "bot@github.action"
+          git config --global user.name "GitHub Action"
+          git add README.md
+          git commit -m "Inject Hugging Face config block"
+          
+          # 4. Force push this customized version to Hugging Face
           git push --force https://mannmehta04:$HF_TOKEN@huggingface.co/spaces/mannmehta04/annotation-tool HEAD:main
