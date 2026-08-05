@@ -5,9 +5,11 @@ Boot dependency installer, initializes config, launches the UI.
 Nothing else lives here.
 """
 
+import spaces  # CRITICAL: Must be imported before anything else
 import subprocess
 import sys
 import os
+
 def check_dependencies():
     missing = []
     try:
@@ -57,7 +59,6 @@ makeDir()
 from views.ui import build_ui, CUSTOM_CSS, CUSTOM_JS
 demo = build_ui()
 
-import spaces
 import gradio as gr
 
 @spaces.GPU
