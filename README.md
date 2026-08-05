@@ -88,15 +88,15 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                        Browser                                │
-│                                                               │
-│   Annotation Tab    Segments Tab    Download Tab              │
+│                        Browser                               │
+│                                                              │
+│   Annotation Tab    Segments Tab    Download Tab             │
 └─────────┬──────────────┬──────────────┬──────────────────────┘
           │              │              │
           ▼              ▼              ▼
 ┌──────────────────────────────────────────────────────────────┐
-│               FastAPI + Gradio Server                         │
-│                                                               │
+│               FastAPI + Gradio Server                        │
+│                                                              │
 │  ┌─────────────────────────────────────────────────────────┐ │
 │  │ Streaming Routes                                        │ │
 │  │  GET /segment/audio/{id}          inline audio          │ │
@@ -104,19 +104,19 @@
 │  │  GET /segment/download/audio/{id} audio attachment      │ │
 │  │  GET /segment/download/video/{id} video attachment      │ │
 │  └─────────────────────────────────────────────────────────┘ │
-│                                                               │
-│  controllers/                                                 │
-│    extractor.py           metadata only — no file writes      │
-│    media_extractor.py     ffmpeg on-demand — temp files only  │
+│                                                              │
+│  controllers/                                                │
+│    extractor.py           metadata only — no file writes     │
+│    media_extractor.py     ffmpeg on-demand — temp files only │
 │    spectrogram_analysis.py librosa + matplotlib pipeline     │
-│    supabase_sync.py       all database operations             │
+│    supabase_sync.py       all database operations            │
 └──────────────────────────┬───────────────────────────────────┘
                            │
                            ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                       Supabase                                │
-│                                                               │
-│  Table: annotations                                           │
+│                       Supabase                               │
+│                                                              │
+│  Table: annotations                                          │
 │  ┌────────────────┬──────────┬──────────────────────────┐    │
 │  │ id             │ TEXT PK  │ video_Rasa_YYYYMMDD_...  │    │
 │  │ source_video   │ TEXT     │ URL or path to source    │    │
