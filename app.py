@@ -9,6 +9,11 @@ import subprocess
 import sys
 import os
 
+# Write YouTube cookies from environment variable to a local file for yt-dlp
+if os.environ.get("YOUTUBE_COOKIES"):
+    with open("cookies.txt", "w") as f:
+        f.write(os.environ.get("YOUTUBE_COOKIES"))
+    print("✅ YouTube cookies successfully loaded from environment.")
 
 def check_dependencies():
     missing = []
@@ -400,6 +405,7 @@ if __name__ == "__main__":
             import yt_dlp
             
             ydl_opts = {
+                'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
                 'skip_download': True,
                 'quiet': True,
                 'no_warnings': True,
@@ -514,6 +520,7 @@ if __name__ == "__main__":
         format_string = _build_safe_format_string(format_id, quality, ext)
         
         ydl_opts = {
+            'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
             'format': format_string,
             'skip_download': True,
             'quiet': True,
