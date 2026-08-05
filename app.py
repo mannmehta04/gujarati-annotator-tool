@@ -5,7 +5,9 @@ Boot dependency installer, initializes config, launches the UI.
 Nothing else lives here.
 """
 
-import spaces  # CRITICAL: Must be imported before anything else
+# CRITICAL: spaces MUST be imported before gradio and before check_dependencies
+import spaces
+
 import subprocess
 import sys
 import os
@@ -704,3 +706,10 @@ app = gr.mount_gradio_app(
         str(SCRIPT_DIR),
     ]
 )
+
+# TRICK #2: The HF ZeroGPU supervisor scans the `app` variable for Gradio functions.
+# Because `app` is a FastAPI instance, we must alias the Gradio dependency graph to it.
+if hasattr(demo, 'fns'):
+    app.fns = demo.fns
+if hasattr(demo, 'dependencies'):
+    app.dependencies = demo.dependencies
