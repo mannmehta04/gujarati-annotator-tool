@@ -9,11 +9,15 @@ import subprocess
 import sys
 import os
 
-# Write YouTube cookies from environment variable to a local file for yt-dlp
+# Dynamically create runtime cookies file from Render environment variables
+COOKIE_FILE_PATH = "/tmp/cookies.txt"
 if os.environ.get("YOUTUBE_COOKIES"):
-    with open("cookies.txt", "w") as f:
-        f.write(os.environ.get("YOUTUBE_COOKIES"))
-    print("✅ YouTube cookies successfully loaded from environment.")
+    try:
+        with open(COOKIE_FILE_PATH, "w") as f:
+            f.write(os.environ.get("YOUTUBE_COOKIES"))
+        print(f"✅ YouTube cookies successfully created at {COOKIE_FILE_PATH}")
+    except Exception as e:
+        print(f"⚠️ Failed to write cookie file: {e}")
 
 def check_dependencies():
     missing = []
@@ -405,7 +409,8 @@ if __name__ == "__main__":
             import yt_dlp
             
             ydl_opts = {
-                'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+                'cookiefile': COOKIE_FILE_PATH if os.path.exists(COOKIE_FILE_PATH) else None,
+                'extractor_args': {'youtube': {'player_client': ['tv', 'mweb', 'web']}},
                 'skip_download': True,
                 'quiet': True,
                 'no_warnings': True,
@@ -520,7 +525,8 @@ if __name__ == "__main__":
         format_string = _build_safe_format_string(format_id, quality, ext)
         
         ydl_opts = {
-            'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+            'cookiefile': COOKIE_FILE_PATH if os.path.exists(COOKIE_FILE_PATH) else None,
+            'extractor_args': {'youtube': {'player_client': ['tv', 'mweb', 'web']}},
             'format': format_string,
             'skip_download': True,
             'quiet': True,
