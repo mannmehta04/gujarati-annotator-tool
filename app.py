@@ -9,15 +9,6 @@ import subprocess
 import sys
 import os
 
-# Dynamically create runtime cookies file from Render environment variables
-COOKIE_FILE_PATH = "/tmp/cookies.txt"
-if os.environ.get("YOUTUBE_COOKIES"):
-    try:
-        with open(COOKIE_FILE_PATH, "w") as f:
-            f.write(os.environ.get("YOUTUBE_COOKIES"))
-        print(f"✅ YouTube cookies successfully created at {COOKIE_FILE_PATH}")
-    except Exception as e:
-        print(f"⚠️ Failed to write cookie file: {e}")
 
 def check_dependencies():
     missing = []
@@ -409,8 +400,6 @@ if __name__ == "__main__":
             import yt_dlp
             
             ydl_opts = {
-                'cookiefile': COOKIE_FILE_PATH if os.path.exists(COOKIE_FILE_PATH) else None,
-                'extractor_args': {'youtube': {'player_client': ['tv', 'mweb', 'web']}},
                 'skip_download': True,
                 'quiet': True,
                 'no_warnings': True,
@@ -525,8 +514,6 @@ if __name__ == "__main__":
         format_string = _build_safe_format_string(format_id, quality, ext)
         
         ydl_opts = {
-            'cookiefile': COOKIE_FILE_PATH if os.path.exists(COOKIE_FILE_PATH) else None,
-            'extractor_args': {'youtube': {'player_client': ['tv', 'mweb', 'web']}},
             'format': format_string,
             'skip_download': True,
             'quiet': True,

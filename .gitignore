@@ -44,7 +44,3 @@ Thumbs.db
 # Logs
 *.log
 logs/
-
-# Cookies
-cookies.txt
-/tmp/cookies.txt
